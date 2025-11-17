@@ -4,6 +4,8 @@
  * Returns Simplified Chinese (as-is from Cool18)
  */
 
+const { normalizeToHalfWidth } = require('./converter');
+
 /**
  * Detect book name from thread title
  * Patterns: (都市猎艳.*?)第, (.*?)第.*章
@@ -15,6 +17,12 @@ function detectBookName(threadTitle) {
 
   // Common patterns for book name detection
   const patterns = [
+    // Pattern: "【书名】（14）作者：xxx" -> "书名"
+    /^【([^】]+)】\s*[（(][^）)]+[）)]/,
+    // Pattern: "【书名】第126章" -> "书名"
+    /^【([^】]+)】\s*第[零一二三四五六七八九十百千万两0-9]+(?:章|回|集|話|篇|部|卷)/,
+    // Pattern: "【书名】" -> "书名"
+    /^【([^】]+)】/,
     // Pattern: "都市猎艳人生 第126章" -> "都市猎艳人生"
     /^(.+?)\s*第[零一二三四五六七八九十百千万两0-9]+(?:章|回|集|話|篇|部|卷)/,
     // Pattern: "书名（第126章）" -> "书名"
@@ -36,6 +44,9 @@ function detectBookName(threadTitle) {
       bookName = bookName.replace(/\s*[-－]\s*$/, '');
       bookName = bookName.replace(/\s*[（(].*?[）)]\s*$/, '');
       bookName = bookName.replace(/\s*【.*?】\s*$/, '');
+      
+      // Normalize full-width English to half-width
+      bookName = normalizeToHalfWidth(bookName.trim());
       
       // Must have at least 2 characters
       if (bookName.length >= 2) {

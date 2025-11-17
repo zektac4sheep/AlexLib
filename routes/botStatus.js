@@ -11,7 +11,7 @@ router.get('/operations', async (req, res) => {
     try {
         const operations = botStatusService.getActiveOperations();
 
-        // Enrich download operations with database data
+        // Enrich operations with database data and calculate progress
         const enrichedOperations = await Promise.all(
             operations.map(async (op) => {
                 if (op.type === 'download' && op.id) {
@@ -31,6 +31,16 @@ router.get('/operations', async (req, res) => {
                     } catch (error) {
                         logger.error('Error fetching download job for bot status', { jobId: op.id, error });
                     }
+                } else if (op.type === 'upload') {
+                    // Calculate progress for upload operations
+                    const totalChapters = op.totalChapters || 0;
+                    const completedChapters = op.completedChapters || 0;
+                    return {
+                        ...op,
+                        progress: totalChapters > 0
+                            ? Math.round((completedChapters / totalChapters) * 100)
+                            : 0
+                    };
                 }
                 return op;
             })
@@ -97,6 +107,16 @@ router.get('/stream', (req, res) => {
                         } catch (error) {
                             logger.warn('Error enriching bot status download job in stream', { jobId: op.id, error: error.message });
                         }
+                    } else if (op.type === 'upload') {
+                        // Calculate progress for upload operations
+                        const totalChapters = op.totalChapters || 0;
+                        const completedChapters = op.completedChapters || 0;
+                        return {
+                            ...op,
+                            progress: totalChapters > 0
+                                ? Math.round((completedChapters / totalChapters) * 100)
+                                : 0
+                        };
                     }
                     return op;
                 })

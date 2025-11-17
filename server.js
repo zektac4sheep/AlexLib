@@ -39,6 +39,10 @@ const apiRoutes = require('./routes');
 app.use('/api', apiRoutes);
 
 app.listen(PORT, () => {
-  logger.info(`Alex Library server running on http://localhost:${PORT}`);
+  const url = `http://localhost:${PORT}`;
+  logger.info(`Alex Library server running on ${url}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`👉 開發伺服器已啟動，請手動開啟瀏覽器：${url}`);
+  }
 });
 
