@@ -1,7 +1,7 @@
 {
-  "name": "cool18-reborn-v3",
+  "name": "alex-library",
   "version": "3.0.0",
-  "description": "Cool18 Reborn v3 - Traditional Chinese novel downloader and Joplin integration",
+  "description": "Alex Library - Traditional Chinese novel downloader and Joplin integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,17 +16,18 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
-    "opencc-js": "^1.0.3",
-    "sqlite3": "^5.1.6",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
     "multer": "^1.4.5-lts.1",
-    "p-limit": "^4.0.0"
+    "opencc-js": "^1.0.3",
+    "p-limit": "^4.0.0",
+    "sqlite3": "^5.1.6",
+    "winston": "^3.11.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   }
 }
-

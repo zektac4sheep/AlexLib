@@ -1,4 +1,4 @@
-# Technical Architecture Plan - Cool18 Reborn v3
+# Technical Architecture Plan - Alex Library
 
 ## 1. Project Structure
 

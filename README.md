@@ -1,4 +1,4 @@
-# Cool18 Reborn v3
+# Alex Library
 
 Traditional Chinese novel downloader and Joplin integration system.
 
