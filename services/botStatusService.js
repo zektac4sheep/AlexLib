@@ -8,6 +8,9 @@ const DownloadJob = require('../models/download');
 // Store active operations
 const activeOperations = new Map();
 
+// Track last activity time (when any operation ended)
+let lastActivityTime = new Date();
+
 /**
  * Register an active operation
  * @param {string} type - Operation type: 'search', 'download', 'upload', 'export'
@@ -38,6 +41,8 @@ function updateOperation(type, id, updates) {
         Object.assign(operation, updates);
         if (updates.status === 'completed' || updates.status === 'failed') {
             operation.endTime = new Date();
+            // Update last activity time when operation ends
+            lastActivityTime = new Date();
             // Remove completed operations after 5 minutes
             setTimeout(() => {
                 activeOperations.delete(operationId);
@@ -93,6 +98,22 @@ function isBotActive() {
 }
 
 /**
+ * Get last activity time (when any operation ended)
+ * @returns {Date}
+ */
+function getLastActivityTime() {
+    return lastActivityTime;
+}
+
+/**
+ * Get idle duration in milliseconds
+ * @returns {number}
+ */
+function getIdleDuration() {
+    return new Date() - lastActivityTime;
+}
+
+/**
  * Get summary statistics
  * @returns {Object} Summary stats
  */
@@ -127,6 +148,8 @@ module.exports = {
     getOperation,
     getOperationsByType,
     isBotActive,
-    getSummary
+    getSummary,
+    getLastActivityTime,
+    getIdleDuration
 };
 

@@ -45,7 +45,13 @@ function initializeDatabase() {
           author TEXT,
           category TEXT,
           description TEXT,
-          source_url TEXT
+          source_url TEXT,
+          sync_to_joplin INTEGER DEFAULT 0,
+          sync_to_onenote INTEGER DEFAULT 0, 
+          onenote_section_id TEXT, 
+          onenote_section_url TEXT
+
+
         )
       `,
                 (err) => {
@@ -75,6 +81,58 @@ function initializeDatabase() {
                         `ALTER TABLE books ADD COLUMN rating INTEGER DEFAULT 0`,
                         () => {}
                     );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN sync_to_joplin INTEGER DEFAULT 0`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN auto_search INTEGER DEFAULT 0`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN last_search_datetime DATETIME`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN rebuild_chunks INTEGER DEFAULT 0`,
+                        (err) => {
+                            if (
+                                err &&
+                                !err.message.includes("duplicate column")
+                            ) {
+                                logger.error(
+                                    "Error adding rebuild_chunks column",
+                                    { err }
+                                );
+                            }
+                        }
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN sync_to_onenote INTEGER DEFAULT 0`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN onenote_section_id TEXT`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN onenote_section_url TEXT`,
+                        () => {}
+                    );
+                    database.run(
+                        `ALTER TABLE books ADD COLUMN last_synced_to_joplin DATETIME`,
+                        (err) => {
+                            if (
+                                err &&
+                                !err.message.includes("duplicate column")
+                            ) {
+                                logger.error(
+                                    "Error adding last_synced_to_joplin column",
+                                    { err }
+                                );
+                            }
+                        }
+                    );
                 }
             );
 
@@ -95,8 +153,9 @@ function initializeDatabase() {
           downloaded_at DATETIME,
           status TEXT DEFAULT 'pending',
           joplin_note_id TEXT,
+          series TEXT DEFAULT 'official',
           FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
-          UNIQUE(book_id, chapter_number)
+          UNIQUE(book_id, chapter_number, series)
         )
       `,
                 (err) => {
@@ -109,6 +168,90 @@ function initializeDatabase() {
                     database.run(
                         `ALTER TABLE chapters ADD COLUMN chapter_name TEXT`,
                         () => {}
+                    );
+                    // Add job_id column if it doesn't exist (migration)
+                    database.run(
+                        `ALTER TABLE chapters ADD COLUMN job_id INTEGER`,
+                        (alterErr) => {
+                            // Ignore error if column already exists
+                            if (
+                                alterErr &&
+                                !alterErr.message.includes("duplicate column")
+                            ) {
+                                logger.warn(
+                                    "Error adding job_id column to chapters",
+                                    {
+                                        err: alterErr,
+                                    }
+                                );
+                            }
+                        }
+                    );
+                    // Add series column if it doesn't exist (migration)
+                    database.run(
+                        `ALTER TABLE chapters ADD COLUMN series TEXT DEFAULT 'official'`,
+                        (alterErr) => {
+                            // Ignore error if column already exists
+                            if (
+                                alterErr &&
+                                !alterErr.message.includes("duplicate column")
+                            ) {
+                                logger.warn(
+                                    "Error adding series column to chapters",
+                                    {
+                                        err: alterErr,
+                                    }
+                                );
+                            }
+                            
+                            // Migrate table to new UNIQUE constraint (book_id, chapter_number, series)
+                            // Check if we need to recreate the table
+                            database.all(
+                                `SELECT sql FROM sqlite_master WHERE type='table' AND name='chapters'`,
+                                [],
+                                (err, rows) => {
+                                    if (err) {
+                                        logger.error("Error checking table schema", { err });
+                                        return;
+                                    }
+                                    
+                                    if (rows.length > 0) {
+                                        const createSql = rows[0].sql;
+                                        // Check if the old constraint UNIQUE(book_id, chapter_number) exists
+                                        // and new constraint UNIQUE(book_id, chapter_number, series) doesn't
+                                        const hasOldConstraint = createSql.includes("UNIQUE(book_id, chapter_number)") && 
+                                                               !createSql.includes("UNIQUE(book_id, chapter_number, series)");
+                                        
+                                        if (hasOldConstraint) {
+                                            logger.info("Migrating chapters table to new UNIQUE constraint...");
+                                            migrateChaptersTable(database, (migrateErr) => {
+                                                if (migrateErr) {
+                                                    logger.error("Error migrating chapters table", { err: migrateErr });
+                                                } else {
+                                                    logger.info("Chapters table migration completed successfully");
+                                                }
+                                            });
+                                        } else {
+                                            // Create unique index as backup enforcement
+                                            database.run(
+                                                `CREATE UNIQUE INDEX IF NOT EXISTS idx_chapters_book_chapter_series 
+                                                 ON chapters(book_id, chapter_number, series)`,
+                                                (indexErr) => {
+                                                    if (indexErr) {
+                                                        logger.warn(
+                                                            "Error creating unique index on chapters",
+                                                            {
+                                                                err: indexErr,
+                                                            }
+                                                        );
+                                                    }
+                                                }
+                                            );
+                                        }
+                                    }
+                                }
+                            );
+                        }
                     );
                 }
             );
@@ -123,6 +266,7 @@ function initializeDatabase() {
           total_chapters INTEGER,
           completed_chapters INTEGER DEFAULT 0,
           failed_chapters INTEGER DEFAULT 0,
+          chapters_data TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           completed_at DATETIME,
           FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE SET NULL
@@ -136,6 +280,24 @@ function initializeDatabase() {
                         reject(err);
                         return;
                     }
+                    // Add chapters_data column if it doesn't exist (migration)
+                    database.run(
+                        `ALTER TABLE download_jobs ADD COLUMN chapters_data TEXT`,
+                        (alterErr) => {
+                            // Ignore error if column already exists
+                            if (
+                                alterErr &&
+                                !alterErr.message.includes("duplicate column")
+                            ) {
+                                logger.warn(
+                                    "Error adding chapters_data column",
+                                    {
+                                        err: alterErr,
+                                    }
+                                );
+                            }
+                        }
+                    );
                 }
             );
 
@@ -159,6 +321,58 @@ function initializeDatabase() {
                 }
             );
 
+            // Create book_authors table
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS book_authors (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          book_id INTEGER NOT NULL,
+          author TEXT NOT NULL,
+          FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+          UNIQUE(book_id, author)
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating book_authors table", {
+                            err,
+                        });
+                        reject(err);
+                        return;
+                    }
+                    // Migrate existing author data from books.author to book_authors
+                    database.all(
+                        "SELECT id, author FROM books WHERE author IS NOT NULL AND author != ''",
+                        [],
+                        (err, rows) => {
+                            if (!err && rows) {
+                                rows.forEach((row) => {
+                                    if (row.author) {
+                                        // Insert author into book_authors, ignoring duplicates
+                                        database.run(
+                                            "INSERT OR IGNORE INTO book_authors (book_id, author) VALUES (?, ?)",
+                                            [row.id, row.author],
+                                            (insertErr) => {
+                                                if (insertErr) {
+                                                    logger.warn(
+                                                        "Error migrating author to book_authors",
+                                                        {
+                                                            bookId: row.id,
+                                                            author: row.author,
+                                                            error: insertErr,
+                                                        }
+                                                    );
+                                                }
+                                            }
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    );
+                }
+            );
+
             // Create search_results table
             database.run(
                 `
@@ -179,6 +393,113 @@ function initializeDatabase() {
                         reject(err);
                         return;
                     }
+                }
+            );
+
+            // Create chunk_jobs table
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS chunk_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          book_id INTEGER NOT NULL,
+          status TEXT DEFAULT 'queued',
+          chunk_size INTEGER DEFAULT 1000,
+          chunks_data TEXT,
+          total_chunks INTEGER DEFAULT 0,
+          completed_items INTEGER DEFAULT 0,
+          total_items INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          started_at DATETIME,
+          completed_at DATETIME,
+          error_message TEXT,
+          FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating chunk_jobs table", {
+                            err,
+                        });
+                        reject(err);
+                        return;
+                    }
+                    // Add progress tracking columns if they don't exist
+                    database.run(
+                        `ALTER TABLE chunk_jobs ADD COLUMN completed_items INTEGER DEFAULT 0`,
+                        (err) => {
+                            if (
+                                err &&
+                                !err.message.includes("duplicate column")
+                            ) {
+                                logger.error(
+                                    "Error adding completed_items column to chunk_jobs",
+                                    { err }
+                                );
+                            }
+                        }
+                    );
+                    database.run(
+                        `ALTER TABLE chunk_jobs ADD COLUMN total_items INTEGER DEFAULT 0`,
+                        (err) => {
+                            if (
+                                err &&
+                                !err.message.includes("duplicate column")
+                            ) {
+                                logger.error(
+                                    "Error adding total_items column to chunk_jobs",
+                                    { err }
+                                );
+                            }
+                        }
+                    );
+                }
+            );
+
+            // Create chunks table
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chunk_job_id INTEGER NOT NULL,
+          book_id INTEGER NOT NULL,
+          chunk_number INTEGER NOT NULL,
+          total_chunks INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          line_start INTEGER NOT NULL,
+          line_end INTEGER NOT NULL,
+          first_chapter INTEGER,
+          last_chapter INTEGER,
+          chapter_count INTEGER DEFAULT 0,
+          chapters_data TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (chunk_job_id) REFERENCES chunk_jobs(id) ON DELETE CASCADE,
+          FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+          UNIQUE(chunk_job_id, chunk_number)
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating chunks table", {
+                            err,
+                        });
+                        reject(err);
+                        return;
+                    }
+                    // Add migration for joplin_note_id column
+                    database.run(
+                        `ALTER TABLE chunks ADD COLUMN joplin_note_id TEXT`,
+                        (err) => {
+                            if (
+                                err &&
+                                !err.message.includes("duplicate column")
+                            ) {
+                                logger.error(
+                                    "Error adding joplin_note_id column to chunks",
+                                    { err }
+                                );
+                            }
+                        }
+                    );
                     logger.info("Database initialized successfully");
                     resolve();
                 }
@@ -198,12 +519,426 @@ function initializeDatabase() {
                 `CREATE INDEX IF NOT EXISTS idx_book_tags_book_id ON book_tags(book_id)`
             );
             database.run(
+                `CREATE INDEX IF NOT EXISTS idx_book_authors_book_id ON book_authors(book_id)`
+            );
+            database.run(
                 `CREATE INDEX IF NOT EXISTS idx_search_results_keyword ON search_results(keyword)`
             );
             database.run(
                 `CREATE INDEX IF NOT EXISTS idx_search_results_created_at ON search_results(created_at)`
             );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_chunk_jobs_book_id ON chunk_jobs(book_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_chunk_jobs_status ON chunk_jobs(status)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_chunks_chunk_job_id ON chunks(chunk_job_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_chunks_book_id ON chunks(book_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_chunks_chunk_number ON chunks(chunk_job_id, chunk_number)`
+            );
+
+            // Create joplin_folders table for syncing Joplin folder structure
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS joplin_folders (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          parent_id TEXT,
+          created_time INTEGER,
+          updated_time INTEGER,
+          user_created_time INTEGER,
+          user_updated_time INTEGER,
+          encryption_cipher_text TEXT,
+          encryption_applied INTEGER DEFAULT 0,
+          is_shared INTEGER DEFAULT 0,
+          type_ INTEGER DEFAULT 1,
+          sync_status INTEGER DEFAULT 0,
+          last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating joplin_folders table", {
+                            err,
+                        });
+                    }
+                }
+            );
+
+            // Create joplin_notes table for syncing Joplin notes
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS joplin_notes (
+          id TEXT PRIMARY KEY,
+          parent_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT,
+          created_time INTEGER,
+          updated_time INTEGER,
+          user_created_time INTEGER,
+          user_updated_time INTEGER,
+          encryption_cipher_text TEXT,
+          encryption_applied INTEGER DEFAULT 0,
+          is_todo INTEGER DEFAULT 0,
+          todo_due INTEGER,
+          todo_completed INTEGER,
+          source_url TEXT,
+          source_application TEXT,
+          application_data TEXT,
+          order_ INTEGER DEFAULT 0,
+          latitude REAL,
+          longitude REAL,
+          altitude REAL,
+          author TEXT,
+          source TEXT,
+          size INTEGER DEFAULT 0,
+          last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (parent_id) REFERENCES joplin_folders(id) ON DELETE CASCADE
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating joplin_notes table", {
+                            err,
+                        });
+                    }
+                }
+            );
+
+            // Create source_joplin_folders table for mirrored source structure
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS source_joplin_folders (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          parent_id TEXT,
+          created_time INTEGER,
+          updated_time INTEGER,
+          user_created_time INTEGER,
+          user_updated_time INTEGER,
+          encryption_cipher_text TEXT,
+          encryption_applied INTEGER DEFAULT 0,
+          is_shared INTEGER DEFAULT 0,
+          type_ INTEGER DEFAULT 1,
+          sync_status INTEGER DEFAULT 0,
+          note_count INTEGER DEFAULT 0,
+          last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error(
+                            "Error creating source_joplin_folders table",
+                            {
+                                err,
+                            }
+                        );
+                    }
+                }
+            );
+
+            // Create source_joplin_notes table for mirrored source notes
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS source_joplin_notes (
+          id TEXT PRIMARY KEY,
+          parent_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT,
+          file_path TEXT,
+          created_time INTEGER,
+          updated_time INTEGER,
+          user_created_time INTEGER,
+          user_updated_time INTEGER,
+          encryption_cipher_text TEXT,
+          encryption_applied INTEGER DEFAULT 0,
+          is_todo INTEGER DEFAULT 0,
+          todo_due INTEGER,
+          todo_completed INTEGER,
+          source_url TEXT,
+          source_application TEXT,
+          application_data TEXT,
+          order_ INTEGER DEFAULT 0,
+          latitude REAL,
+          longitude REAL,
+          altitude REAL,
+          author TEXT,
+          source TEXT,
+          size INTEGER DEFAULT 0,
+          last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (parent_id) REFERENCES source_joplin_folders(id) ON DELETE CASCADE
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error(
+                            "Error creating source_joplin_notes table",
+                            {
+                                err,
+                            }
+                        );
+                    }
+                }
+            );
+
+            // Create joplin_jobs table for tracking background Joplin operations
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS joplin_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_type TEXT NOT NULL,
+          status TEXT DEFAULT 'queued',
+          api_url TEXT,
+          api_token TEXT,
+          config_data TEXT,
+          progress_data TEXT,
+          total_items INTEGER DEFAULT 0,
+          completed_items INTEGER DEFAULT 0,
+          error_message TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          started_at DATETIME,
+          completed_at DATETIME
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating joplin_jobs table", {
+                            err,
+                        });
+                    }
+                }
+            );
+
+            // Create app_settings table for storing config values
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          encrypted INTEGER DEFAULT 0,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating app_settings table", {
+                            err,
+                        });
+                    }
+                }
+            );
+
+            // Create book_search_jobs table for tracking background book search operations
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS book_search_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          book_id INTEGER NOT NULL,
+          search_type TEXT NOT NULL,
+          status TEXT DEFAULT 'queued',
+          search_params TEXT,
+          results TEXT,
+          search_result_id INTEGER,
+          error_message TEXT,
+          auto_job INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          started_at DATETIME,
+          completed_at DATETIME,
+          FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+          FOREIGN KEY (search_result_id) REFERENCES search_results(id) ON DELETE SET NULL
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating book_search_jobs table", {
+                            err,
+                        });
+                    } else {
+                        // Add auto_job column if it doesn't exist (migration)
+                        database.run(
+                            `ALTER TABLE book_search_jobs ADD COLUMN auto_job INTEGER DEFAULT 0`,
+                            () => {}
+                        );
+                    }
+                }
+            );
+
+            // Create upload_jobs table for tracking file upload processing
+            database.run(
+                `
+        CREATE TABLE IF NOT EXISTS upload_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          filename TEXT NOT NULL,
+          original_name TEXT,
+          file_path TEXT,
+          file_size INTEGER,
+          status TEXT DEFAULT 'waiting_for_input',
+          analysis_data TEXT,
+          book_id INTEGER,
+          book_metadata TEXT,
+          error_message TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          started_at DATETIME,
+          completed_at DATETIME,
+          FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE SET NULL
+        )
+      `,
+                (err) => {
+                    if (err) {
+                        logger.error("Error creating upload_jobs table", {
+                            err,
+                        });
+                    }
+                }
+            );
+
+            // Create indexes for Joplin tables
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_joplin_folders_parent_id ON joplin_folders(parent_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_joplin_notes_parent_id ON joplin_notes(parent_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_joplin_notes_updated_time ON joplin_notes(updated_time)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_source_joplin_folders_parent_id ON source_joplin_folders(parent_id)`
+            );
+
+            // Add note_count column if it doesn't exist (migration for existing databases)
+            database.run(
+                `ALTER TABLE source_joplin_folders ADD COLUMN note_count INTEGER DEFAULT 0`,
+                (err) => {
+                    // Ignore error if column already exists
+                    if (err && !err.message.includes("duplicate column")) {
+                        logger.error("Error adding note_count column", { err });
+                    }
+                }
+            );
+            database.run(
+                `ALTER TABLE source_joplin_notes ADD COLUMN file_path TEXT`,
+                (err) => {
+                    if (err && !err.message.includes("duplicate column")) {
+                        logger.error("Error adding file_path column", { err });
+                    }
+                }
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_source_joplin_notes_parent_id ON source_joplin_notes(parent_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_source_joplin_notes_updated_time ON source_joplin_notes(updated_time)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_joplin_jobs_status ON joplin_jobs(status)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_joplin_jobs_job_type ON joplin_jobs(job_type)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_book_search_jobs_book_id ON book_search_jobs(book_id)`
+            );
+            database.run(
+                `CREATE INDEX IF NOT EXISTS idx_book_search_jobs_status ON book_search_jobs(status)`
+            );
         });
+    });
+}
+
+/**
+ * Migrate chapters table to new UNIQUE constraint (book_id, chapter_number, series)
+ * Since SQLite doesn't support DROP CONSTRAINT, we need to recreate the table
+ */
+function migrateChaptersTable(database, callback) {
+    database.serialize(() => {
+        // Step 1: Create new table with correct schema
+        database.run(
+            `CREATE TABLE IF NOT EXISTS chapters_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                chapter_number INTEGER,
+                chapter_title TEXT,
+                chapter_title_simplified TEXT,
+                chapter_name TEXT,
+                cool18_url TEXT,
+                cool18_thread_id TEXT,
+                content TEXT,
+                line_start INTEGER,
+                line_end INTEGER,
+                downloaded_at DATETIME,
+                status TEXT DEFAULT 'pending',
+                joplin_note_id TEXT,
+                job_id INTEGER,
+                series TEXT DEFAULT 'official',
+                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+                UNIQUE(book_id, chapter_number, series)
+            )`,
+            (err) => {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+                
+                // Step 2: Copy data from old table to new table
+                database.run(
+                    `INSERT INTO chapters_new 
+                     (id, book_id, chapter_number, chapter_title, chapter_title_simplified, 
+                      chapter_name, cool18_url, cool18_thread_id, content, line_start, 
+                      line_end, downloaded_at, status, joplin_note_id, job_id, series)
+                     SELECT 
+                     id, book_id, chapter_number, chapter_title, chapter_title_simplified,
+                     chapter_name, cool18_url, cool18_thread_id, content, line_start,
+                     line_end, downloaded_at, status, joplin_note_id, job_id,
+                     COALESCE(series, 'official') as series
+                     FROM chapters`,
+                    (err) => {
+                        if (err) {
+                            callback(err);
+                            return;
+                        }
+                        
+                        // Step 3: Drop old table
+                        database.run(`DROP TABLE chapters`, (err) => {
+                            if (err) {
+                                callback(err);
+                                return;
+                            }
+                            
+                            // Step 4: Rename new table to original name
+                            database.run(`ALTER TABLE chapters_new RENAME TO chapters`, (err) => {
+                                if (err) {
+                                    callback(err);
+                                    return;
+                                }
+                                
+                                // Step 5: Recreate indexes
+                                database.run(
+                                    `CREATE INDEX IF NOT EXISTS idx_chapters_book_id ON chapters(book_id)`,
+                                    () => {}
+                                );
+                                database.run(
+                                    `CREATE INDEX IF NOT EXISTS idx_chapters_status ON chapters(status)`,
+                                    () => {}
+                                );
+                                database.run(
+                                    `CREATE INDEX IF NOT EXISTS idx_chapters_cool18_url ON chapters(cool18_url)`,
+                                    () => {}
+                                );
+                                
+                                callback(null);
+                            });
+                        });
+                    }
+                );
+            }
+        );
     });
 }
 

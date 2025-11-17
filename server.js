@@ -16,8 +16,25 @@ app.use(express.static('public'));
 
 // Initialize database on startup
 initializeDatabase()
-  .then(() => {
+  .then(async () => {
     logger.info('Database initialized');
+    
+    // Resume any interrupted jobs from previous server session
+    const jobResumptionService = require('./services/jobResumptionService');
+    await jobResumptionService.resumeInterruptedJobs();
+    
+    // Start background queue processors
+    const bookSearchService = require('./services/bookSearchService');
+    bookSearchService.startQueueProcessor();
+    logger.info('Book search queue processor started');
+    
+    // Start scheduled job cleanup (runs daily, removes jobs older than 14 days)
+    const jobCleanupService = require('./services/jobCleanupService');
+    jobCleanupService.startScheduledCleanup(24);
+    
+    // Auto search service is started/stopped via API endpoint
+    // It's disabled by default and can be enabled via the JobsTab toggle
+    logger.info('Auto search service available (disabled by default)');
   })
   .catch((err) => {
     logger.error('Failed to initialize database', { err });

@@ -1,23 +1,42 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const cool18Scraper = require('../services/cool18Scraper');
 const chapterExtractor = require('../services/chapterExtractor');
 const bookDetector = require('../services/bookDetector');
 const converter = require('../services/converter');
+const { normalizeToHalfWidth } = require('../services/converter');
 const Book = require('../models/book');
 const SearchResult = require('../models/searchResult');
 const botStatusService = require('../services/botStatusService');
 const logger = require('../utils/logger');
 
+// Ensure temp directory exists
+const tempDir = path.join(__dirname, '../temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
+}
+
+// Configure multer for temporary file uploads
+const upload = multer({ 
+  dest: tempDir,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
 /**
  * Search Cool18 forum and return processed results
  */
 router.get('/', async (req, res) => {
-  const { keyword, pages = 3 } = req.query;
+  let { keyword, pages = 3 } = req.query;
   
   if (!keyword) {
     return res.status(400).json({ error: 'keyword parameter is required' });
   }
+  
+  // Normalize keyword: convert full-width to half-width
+  keyword = normalizeToHalfWidth(keyword.trim());
   
   const searchId = `search-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
@@ -31,7 +50,8 @@ router.get('/', async (req, res) => {
 
     logger.info('Searching Cool18', { keyword, pages: parseInt(pages) });
     // Search Cool18 forum
-    const threads = await cool18Scraper.searchForum(keyword, parseInt(pages));
+    const searchResult = await cool18Scraper.searchForum(keyword, parseInt(pages));
+    const threads = searchResult.threads || [];
     logger.info('Search completed', { keyword, totalThreads: threads.length });
     
     const processedThreads = await buildThreadResponse(threads);
@@ -80,7 +100,12 @@ router.get('/', async (req, res) => {
  */
 router.get('/history', async (req, res) => {
   try {
-    const { keyword, limit = 50 } = req.query;
+    let { keyword, limit = 50 } = req.query;
+    
+    // Normalize keyword if provided
+    if (keyword) {
+      keyword = normalizeToHalfWidth(keyword.trim());
+    }
     
     let results;
     if (keyword) {
@@ -128,7 +153,13 @@ router.get('/:id', async (req, res) => {
     if (!result) {
       return res.status(404).json({ error: 'Search result not found' });
     }
-    res.json(result);
+    // Return in the same format as the search endpoint for consistency
+    res.json({
+      keyword: result.keyword,
+      totalResults: result.total_results || (result.results ? result.results.length : 0),
+      threads: result.results || [],
+      searchResultId: result.id
+    });
   } catch (error) {
     logger.error('Error fetching search result', { error, id: req.params.id });
     res.status(500).json({ 
@@ -158,14 +189,82 @@ router.delete('/:id', async (req, res) => {
 });
 
 /**
- * Parse uploaded HTML search page instead of crawling Cool18
+ * Upload and parse HTML search page file
+ */
+router.post('/upload-html', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  let keyword = req.body.keyword || '';
+  const pages = parseInt(req.body.pages) || 1;
+  const searchId = `search-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  try {
+    // Read the uploaded file
+    const fileContent = fs.readFileSync(req.file.path, 'utf8');
+    
+    // Clean up temporary file
+    fs.unlinkSync(req.file.path);
+
+    // Normalize keyword
+    keyword = keyword ? normalizeToHalfWidth(keyword.trim()) : 'uploaded-html';
+
+    botStatusService.registerOperation('search', searchId, {
+      keyword: keyword || 'uploaded-html',
+      pages: pages,
+      status: 'active',
+      source: 'html',
+    });
+
+    const threads = cool18Scraper.extractThreadMetadata(fileContent);
+    logger.info('Parsed uploaded search HTML', { keyword, threadCount: threads.length });
+
+    const processedThreads = await buildThreadResponse(threads);
+
+    const searchResultId = await SearchResult.create(keyword || 'uploaded-html', pages, processedThreads);
+
+    botStatusService.updateOperation('search', searchId, {
+      status: 'completed',
+      totalResults: processedThreads.length,
+    });
+
+    res.json({
+      keyword,
+      totalResults: processedThreads.length,
+      threads: processedThreads,
+      searchResultId: searchResultId
+    });
+  } catch (error) {
+    // Clean up temporary file on error
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    logger.error('Error parsing uploaded search HTML', { error });
+    botStatusService.updateOperation('search', searchId, {
+      status: 'failed',
+      error: error.message,
+    });
+    res.status(500).json({
+      error: 'Failed to parse search HTML',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Parse uploaded HTML search page instead of crawling Cool18 (direct HTML content)
  */
 router.post('/html', async (req, res) => {
-  const { htmlContent, keyword = '', pages = 1 } = req.body || {};
+  let { htmlContent, keyword = '', pages = 1 } = req.body || {};
 
   if (!htmlContent || typeof htmlContent !== 'string' || htmlContent.trim() === '') {
     return res.status(400).json({ error: 'htmlContent is required' });
   }
+
+  // Normalize keyword: convert full-width to half-width
+  keyword = keyword ? normalizeToHalfWidth(keyword.trim()) : 'uploaded-html';
 
   const searchId = `search-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 

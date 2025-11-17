@@ -5,3 +5,5 @@ source/
 *.log
 .DS_Store
 
+logs/
+format_output/

@@ -1,14 +1,15 @@
 const { getDatabase } = require('./database');
 
 class DownloadJob {
-  static async create(bookId, totalChapters) {
+  static async create(bookId, totalChapters, chaptersData = null) {
     const db = getDatabase();
     return new Promise((resolve, reject) => {
       const sql = `
-        INSERT INTO download_jobs (book_id, status, total_chapters, completed_chapters, failed_chapters)
-        VALUES (?, 'queued', ?, 0, 0)
+        INSERT INTO download_jobs (book_id, status, total_chapters, completed_chapters, failed_chapters, chapters_data)
+        VALUES (?, 'queued', ?, 0, 0, ?)
       `;
-      db.run(sql, [bookId, totalChapters], function(err) {
+      const chaptersDataJson = chaptersData ? JSON.stringify(chaptersData) : null;
+      db.run(sql, [bookId, totalChapters, chaptersDataJson], function(err) {
         if (err) {
           reject(err);
         } else {
@@ -25,6 +26,10 @@ class DownloadJob {
         if (err) {
           reject(err);
         } else {
+          if (row) {
+            // Parse chapters_data JSON
+            row.chapters_data = row.chapters_data ? JSON.parse(row.chapters_data) : null;
+          }
           resolve(row);
         }
       });
@@ -97,6 +102,89 @@ class DownloadJob {
           }
         }
       );
+    });
+  }
+
+  static async findAll(limit = 100, offset = 0) {
+    const db = getDatabase();
+    return new Promise((resolve, reject) => {
+      const sql = `
+        SELECT * FROM download_jobs 
+        ORDER BY created_at DESC 
+        LIMIT ? OFFSET ?
+      `;
+      db.all(sql, [limit, offset], (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          // Parse chapters_data JSON
+          const jobs = rows.map(row => ({
+            ...row,
+            chapters_data: row.chapters_data ? JSON.parse(row.chapters_data) : null
+          }));
+          resolve(jobs);
+        }
+      });
+    });
+  }
+
+  static async findAllByStatus(status, limit = 50) {
+    const db = getDatabase();
+    return new Promise((resolve, reject) => {
+      const sql = `
+        SELECT * FROM download_jobs 
+        WHERE status = ? 
+        ORDER BY created_at DESC 
+        LIMIT ?
+      `;
+      db.all(sql, [status, limit], (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          // Parse chapters_data JSON
+          const jobs = rows.map(row => ({
+            ...row,
+            chapters_data: row.chapters_data ? JSON.parse(row.chapters_data) : null
+          }));
+          resolve(jobs);
+        }
+      });
+    });
+  }
+
+  static async findByBookId(bookId) {
+    const db = getDatabase();
+    return new Promise((resolve, reject) => {
+      const sql = `
+        SELECT * FROM download_jobs 
+        WHERE book_id = ? 
+        ORDER BY created_at DESC
+      `;
+      db.all(sql, [bookId], (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          // Parse chapters_data JSON
+          const jobs = rows.map(row => ({
+            ...row,
+            chapters_data: row.chapters_data ? JSON.parse(row.chapters_data) : null
+          }));
+          resolve(jobs);
+        }
+      });
+    });
+  }
+
+  static async delete(id) {
+    const db = getDatabase();
+    return new Promise((resolve, reject) => {
+      db.run("DELETE FROM download_jobs WHERE id = ?", [id], function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes);
+        }
+      });
     });
   }
 }

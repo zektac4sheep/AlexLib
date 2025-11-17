@@ -8,6 +8,7 @@ const Book = require("../models/book");
 const Chapter = require("../models/chapter");
 const { analyzeFile } = require("../services/fileAnalyzer");
 const { toTraditional, normalizeToHalfWidth } = require("../services/converter");
+const { sortChaptersForExport } = require("../services/chunker");
 const botStatusService = require("../services/botStatusService");
 const logger = require("../utils/logger");
 
@@ -111,6 +112,26 @@ router.post("/analyze", async (req, res) => {
         // Analyze file
         const analysis = await analyzeFile(filePath, originalName || filename);
 
+        // Log parsed chapters with numbers and series
+        if (analysis.chapters && analysis.chapters.length > 0) {
+            logger.info("Parsed chapters from file", {
+                filename: originalName || filename,
+                totalChapters: analysis.totalChapters,
+                chapters: analysis.chapters.map(ch => ({
+                    number: ch.number,
+                    series: ch.series || 'official',
+                    title: ch.title || ch.titleSimplified || ''
+                }))
+            });
+            analysis.chapters.forEach(ch => {
+                logger.info(`Chapter ${ch.number} - Series: ${ch.series || 'official'}`);
+            });
+        } else {
+            logger.info("No chapters found in parsed file", {
+                filename: originalName || filename
+            });
+        }
+
         // Backup file if no chapters were extracted
         if (analysis.totalChapters === 0) {
             try {
@@ -158,10 +179,18 @@ router.post("/analyze", async (req, res) => {
             })),
         });
     } catch (error) {
-        logger.error("Error analyzing file", { error });
+        logger.error("Error analyzing file", {
+            error: {
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+                ...error
+            },
+            filePath
+        });
         res.status(500).json({
             error: "Failed to analyze file",
-            message: error.message,
+            message: error.message || "Unknown error",
         });
     }
 });
@@ -200,6 +229,26 @@ router.post("/process", async (req, res) => {
 
         // Analyze file to get chapters
         const analysis = await analyzeFile(filePath, originalName || filename);
+
+        // Log parsed chapters with numbers and series
+        if (analysis.chapters && analysis.chapters.length > 0) {
+            logger.info("Parsed chapters from file (process)", {
+                filename: originalName || filename,
+                totalChapters: analysis.totalChapters,
+                chapters: analysis.chapters.map(ch => ({
+                    number: ch.number,
+                    series: ch.series || 'official',
+                    title: ch.title || ch.titleSimplified || ''
+                }))
+            });
+            analysis.chapters.forEach(ch => {
+                logger.info(`Chapter ${ch.number} - Series: ${ch.series || 'official'}`);
+            });
+        } else {
+            logger.info("No chapters found in parsed file (process)", {
+                filename: originalName || filename
+            });
+        }
 
         // Backup file if no chapters were extracted
         if (analysis.totalChapters === 0) {
@@ -306,11 +355,25 @@ router.post("/process", async (req, res) => {
         let updatedCount = 0;
         let errorCount = 0;
 
-        for (let i = 0; i < analysis.chapters.length; i++) {
-            const chapter = analysis.chapters[i];
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChapters = sortChaptersForExport(analysis.chapters);
+
+        for (let i = 0; i < sortedChapters.length; i++) {
+            const chapter = sortedChapters[i];
             try {
                 const chapterTitleTraditional = toTraditional(chapter.title);
+                const chapterTitle = chapter.titleSimplified || chapter.title;
 
+                // Format chapter content using reformatChapterContent (same as check_reformat.js)
+                const textProcessor = require("../services/textProcessor");
+                const formattedContent = textProcessor.reformatChapterContent(
+                    chapter.content || "",
+                    chapterTitle,
+                    true, // Convert to Traditional Chinese
+                    true // Enable detailed logging
+                );
+
+                const series = chapter.series || "official";
                 const chapterData = {
                     book_id: finalBookId,
                     chapter_number: chapter.number,
@@ -318,22 +381,25 @@ router.post("/process", async (req, res) => {
                     chapter_title_simplified:
                         chapter.titleSimplified || chapter.title,
                     chapter_name: chapter.name || "", // Store chapter name if available
-                    content: chapter.content,
+                    content: formattedContent, // Use formatted content instead of raw
                     line_start: chapter.lineStart,
                     line_end: chapter.lineEnd,
                     status: "downloaded",
+                    series: series,
                 };
 
                 // Check if chapter already exists
                 const existingChapter = await Chapter.findByBookAndNumber(
                     finalBookId,
-                    chapter.number
+                    chapter.number,
+                    series
                 );
 
                 if (existingChapter) {
                     // Update existing chapter
-                    await Chapter.updateByBookAndNumber(
+                    await Chapter.updateByBookSeriesAndNumber(
                         finalBookId,
+                        series,
                         chapter.number,
                         chapterData
                     );
@@ -444,6 +510,26 @@ router.post("/extract-and-create", async (req, res) => {
         // Analyze file to extract book information and chapters
         const analysis = await analyzeFile(filePath, originalName || filename);
 
+        // Log parsed chapters with numbers and series
+        if (analysis.chapters && analysis.chapters.length > 0) {
+            logger.info("Parsed chapters from file (extract-and-create)", {
+                filename: originalName || filename,
+                totalChapters: analysis.totalChapters,
+                chapters: analysis.chapters.map(ch => ({
+                    number: ch.number,
+                    series: ch.series || 'official',
+                    title: ch.title || ch.titleSimplified || ''
+                }))
+            });
+            analysis.chapters.forEach(ch => {
+                logger.info(`Chapter ${ch.number} - Series: ${ch.series || 'official'}`);
+            });
+        } else {
+            logger.info("No chapters found in parsed file (extract-and-create)", {
+                filename: originalName || filename
+            });
+        }
+
         // Backup file if no chapters were extracted
         if (analysis.totalChapters === 0) {
             try {
@@ -539,8 +625,11 @@ router.post("/extract-and-create", async (req, res) => {
             });
         }
 
-        for (let i = 0; i < analysis.chapters.length; i++) {
-            const chapter = analysis.chapters[i];
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChaptersExtract = sortChaptersForExport(analysis.chapters);
+
+        for (let i = 0; i < sortedChaptersExtract.length; i++) {
+            const chapter = sortedChaptersExtract[i];
             try {
                 // Validate chapter number
                 if (chapter.number === null || chapter.number === undefined) {
@@ -554,6 +643,17 @@ router.post("/extract-and-create", async (req, res) => {
                 }
 
                 const chapterTitleTraditional = toTraditional(chapter.title || "");
+                const chapterTitle = chapter.titleSimplified || chapter.title || "";
+                const series = chapter.series || "official";
+
+                // Format chapter content using reformatChapterContent (same as check_reformat.js)
+                const textProcessor = require("../services/textProcessor");
+                const formattedContent = textProcessor.reformatChapterContent(
+                    chapter.content || "",
+                    chapterTitle,
+                    true, // Convert to Traditional Chinese
+                    true // Enable detailed logging
+                );
 
                 const chapterData = {
                     book_id: bookId,
@@ -562,22 +662,25 @@ router.post("/extract-and-create", async (req, res) => {
                     chapter_title_simplified:
                         chapter.titleSimplified || chapter.title || "",
                     chapter_name: chapter.name || "",
-                    content: chapter.content || "",
+                    content: formattedContent, // Use formatted content instead of raw
                     line_start: chapter.lineStart || null,
                     line_end: chapter.lineEnd || null,
                     status: "downloaded",
+                    series: series,
                 };
 
                 // Check if chapter already exists
                 const existingChapter = await Chapter.findByBookAndNumber(
                     bookId,
-                    chapter.number
+                    chapter.number,
+                    series
                 );
 
                 if (existingChapter) {
                     // Update existing chapter
-                    await Chapter.updateByBookAndNumber(
+                    await Chapter.updateByBookSeriesAndNumber(
                         bookId,
+                        series,
                         chapter.number,
                         chapterData
                     );

@@ -1,0 +1,45 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/zekta/git/AlexLib/logs/.2232598391b452418c2c17eec17e958030e62246-audit.json",
+    "files": [
+        {
+            "date": 1763446781169,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-18.log",
+            "hash": "a8c0b3e467e7930e713999e1732b5dc868e3772693a051f17c30651098e3f9c7"
+        },
+        {
+            "date": 1763481601105,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-19.log",
+            "hash": "700a101e84193e0477d25d2b30679576ea9aeb09585d75f3a6ec105816e61f17"
+        },
+        {
+            "date": 1763646959863,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-20.log",
+            "hash": "5d51473417368dc3d0a67e453742b9df6dffa173f2364a1b8a551744ce489c7e"
+        },
+        {
+            "date": 1763650827439,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-21.log",
+            "hash": "2cf3765d12ec05942355f14f0e78e5437e1125941b9bb0955b2431036b8d9d64"
+        },
+        {
+            "date": 1763817856295,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-22.log",
+            "hash": "d7f971c5116fc1b38a7d38f12b9e9c7f74cd58032abb83cc09e8917cc244624f"
+        },
+        {
+            "date": 1763824207701,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-23.log",
+            "hash": "e3f9fdd62cf8674dca7dd33783d7f8690974db78c3e17327668db574cbab6279"
+        },
+        {
+            "date": 1763913972749,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-24.log",
+            "hash": "93717acd8c9b8eccff824cfdaedb1825ab8c4a19147e4e4cb3fcbde465659bbc"
+        }
+    ],
+    "hashType": "sha256"
+}

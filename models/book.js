@@ -16,9 +16,11 @@ class Book {
           category,
           description,
           source_url,
+          sync_to_joplin,
+          auto_search,
           last_updated
         )
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `;
             db.run(
                 sql,
@@ -29,6 +31,8 @@ class Book {
                     metadata.category || null,
                     metadata.description || null,
                     metadata.sourceUrl || null,
+                    metadata.sync_to_joplin ? 1 : 0,
+                    metadata.auto_search ? 1 : 0,
                 ],
                 function (err) {
                     if (err) {
@@ -40,6 +44,21 @@ class Book {
                             Book.addTags(bookId, metadata.tags).catch((err) => {
                                 console.error("Error adding tags:", err);
                             });
+                        }
+                        // Add authors if provided
+                        if (metadata.authors && metadata.authors.length > 0) {
+                            Book.addAuthors(bookId, metadata.authors).catch(
+                                (err) => {
+                                    console.error("Error adding authors:", err);
+                                }
+                            );
+                        } else if (metadata.author) {
+                            // Support legacy single author field
+                            Book.addAuthors(bookId, [metadata.author]).catch(
+                                (err) => {
+                                    console.error("Error adding author:", err);
+                                }
+                            );
                         }
                         resolve(bookId);
                     }
@@ -80,6 +99,63 @@ class Book {
                         reject(err);
                     } else {
                         resolve(rows.map((row) => row.tag));
+                    }
+                }
+            );
+        });
+    }
+
+    static async addAuthors(bookId, authors) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.serialize(() => {
+                const stmt = db.prepare(
+                    "INSERT OR IGNORE INTO book_authors (book_id, author) VALUES (?, ?)"
+                );
+                authors.forEach((author) => {
+                    if (author && author.trim()) {
+                        stmt.run([bookId, author.trim()]);
+                    }
+                });
+                stmt.finalize((err) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve();
+                    }
+                });
+            });
+        });
+    }
+
+    static async getAuthors(bookId) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.all(
+                "SELECT author FROM book_authors WHERE book_id = ? ORDER BY id",
+                [bookId],
+                (err, rows) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(rows.map((row) => row.author));
+                    }
+                }
+            );
+        });
+    }
+
+    static async removeAuthor(bookId, author) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.run(
+                "DELETE FROM book_authors WHERE book_id = ? AND author = ?",
+                [bookId, author],
+                function (err) {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(this.changes);
                     }
                 }
             );
@@ -174,6 +250,22 @@ class Book {
             fields.push("rating = ?");
             values.push(updates.rating);
         }
+        if (updates.sync_to_joplin !== undefined) {
+            fields.push("sync_to_joplin = ?");
+            values.push(updates.sync_to_joplin ? 1 : 0);
+        }
+        if (updates.auto_search !== undefined) {
+            fields.push("auto_search = ?");
+            values.push(updates.auto_search ? 1 : 0);
+        }
+        if (updates.rebuild_chunks !== undefined) {
+            fields.push("rebuild_chunks = ?");
+            values.push(updates.rebuild_chunks ? 1 : 0);
+        }
+        if (updates.last_synced_to_joplin !== undefined) {
+            fields.push("last_synced_to_joplin = ?");
+            values.push(updates.last_synced_to_joplin);
+        }
 
         if (fields.length === 0) {
             return Promise.resolve(0);
@@ -209,9 +301,75 @@ class Book {
                             }
                         );
                     }
+                    // Update authors if provided
+                    if (updates.authors !== undefined) {
+                        // Remove old authors
+                        db.run(
+                            "DELETE FROM book_authors WHERE book_id = ?",
+                            [id],
+                            () => {
+                                // Add new authors
+                                if (updates.authors.length > 0) {
+                                    Book.addAuthors(id, updates.authors).catch(
+                                        (err) => {
+                                            console.error(
+                                                "Error updating authors:",
+                                                err
+                                            );
+                                        }
+                                    );
+
+                                    // Also update the author field in books table (use first author for backward compatibility)
+                                    db.run(
+                                        "UPDATE books SET author = ? WHERE id = ?",
+                                        [updates.authors[0], id],
+                                        (err) => {
+                                            if (err) {
+                                                console.error(
+                                                    "Error updating author field:",
+                                                    err
+                                                );
+                                            }
+                                        }
+                                    );
+                                } else {
+                                    // If authors array is empty, clear the author field
+                                    db.run(
+                                        "UPDATE books SET author = NULL WHERE id = ?",
+                                        [id],
+                                        (err) => {
+                                            if (err) {
+                                                console.error(
+                                                    "Error clearing author field:",
+                                                    err
+                                                );
+                                            }
+                                        }
+                                    );
+                                }
+                            }
+                        );
+                    }
                     resolve(this.changes);
                 }
             });
+        });
+    }
+
+    static async updateLastSearchDatetime(id) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.run(
+                "UPDATE books SET last_search_datetime = datetime('now') WHERE id = ?",
+                [id],
+                function (err) {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(this.changes);
+                    }
+                }
+            );
         });
     }
 

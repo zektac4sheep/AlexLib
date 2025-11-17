@@ -1,34 +1,39 @@
 {
-  "name": "alex-library",
-  "version": "3.0.0",
-  "description": "Alex Library - Traditional Chinese novel downloader and Joplin integration",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "keywords": [
-    "cool18",
-    "joplin",
-    "novel",
-    "traditional-chinese"
-  ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "opencc-js": "^1.0.3",
-    "p-limit": "^4.0.0",
-    "sqlite3": "^5.1.6",
-    "winston": "^3.11.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1",
-    "open": "^8.4.2"
-  }
+    "name": "alex-library",
+    "version": "3.0.0",
+    "description": "Alex Library - Traditional Chinese novel downloader and Joplin integration",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "nodemon server.js",
+        "check_reformat": "node scripts/check_reformat.js"
+    },
+    "keywords": [
+        "cool18",
+        "joplin",
+        "novel",
+        "traditional-chinese"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@azure/identity": "^4.13.0",
+        "@azure/msal-node": "^2.6.0",
+        "@microsoft/msgraph-sdk": "^1.0.0-preview.74",
+        "axios": "^1.6.0",
+        "cheerio": "^1.0.0-rc.12",
+        "cors": "^2.8.5",
+        "dotenv": "^17.2.3",
+        "express": "^4.18.2",
+        "multer": "^1.4.5-lts.1",
+        "opencc-js": "^1.0.3",
+        "p-limit": "^4.0.0",
+        "sqlite3": "^5.1.6",
+        "winston": "^3.11.0",
+        "winston-daily-rotate-file": "^5.0.0"
+    },
+    "devDependencies": {
+        "nodemon": "^3.0.1",
+        "open": "^8.4.2"
+    }
 }
