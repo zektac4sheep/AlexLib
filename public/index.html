@@ -1650,15 +1650,47 @@
                 }
             }
 
+            // Normalize text: convert full-width English and numbers to half-width
+            function normalizeToHalfWidth(text) {
+                if (!text) return text;
+                
+                // Full-width to half-width mapping
+                const fullToHalf = {
+                    'Ａ': 'A', 'Ｂ': 'B', 'Ｃ': 'C', 'Ｄ': 'D', 'Ｅ': 'E', 'Ｆ': 'F',
+                    'Ｇ': 'G', 'Ｈ': 'H', 'Ｉ': 'I', 'Ｊ': 'J', 'Ｋ': 'K', 'Ｌ': 'L',
+                    'Ｍ': 'M', 'Ｎ': 'N', 'Ｏ': 'O', 'Ｐ': 'P', 'Ｑ': 'Q', 'Ｒ': 'R',
+                    'Ｓ': 'S', 'Ｔ': 'T', 'Ｕ': 'U', 'Ｖ': 'V', 'Ｗ': 'W', 'Ｘ': 'X',
+                    'Ｙ': 'Y', 'Ｚ': 'Z',
+                    'ａ': 'a', 'ｂ': 'b', 'ｃ': 'c', 'ｄ': 'd', 'ｅ': 'e', 'ｆ': 'f',
+                    'ｇ': 'g', 'ｈ': 'h', 'ｉ': 'i', 'ｊ': 'j', 'ｋ': 'k', 'ｌ': 'l',
+                    'ｍ': 'm', 'ｎ': 'n', 'ｏ': 'o', 'ｐ': 'p', 'ｑ': 'q', 'ｒ': 'r',
+                    'ｓ': 's', 'ｔ': 't', 'ｕ': 'u', 'ｖ': 'v', 'ｗ': 'w', 'ｘ': 'x',
+                    'ｙ': 'y', 'ｚ': 'z',
+                    '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
+                    '５': '5', '６': '6', '７': '7', '８': '8', '９': '9',
+                    '　': ' ', // Full-width space to half-width space
+                };
+                
+                let normalized = text;
+                for (const [full, half] of Object.entries(fullToHalf)) {
+                    normalized = normalized.replace(new RegExp(full, 'g'), half);
+                }
+                
+                return normalized;
+            }
+
             // Search Queue Management
             function addToQueue() {
-                const keyword = document
+                let keyword = document
                     .getElementById("searchInput")
                     .value.trim();
                 if (!keyword) {
                     showStatus("請輸入搜尋關鍵字", "error");
                     return;
                 }
+
+                // Normalize keyword: convert full-width to half-width
+                keyword = normalizeToHalfWidth(keyword);
 
                 const searchId = Date.now();
                 const queueItem = {
@@ -5017,7 +5049,7 @@
 
                 if (bookSelector.value === "new") {
                     // Get form data for new book
-                    const newBookName = document
+                    let newBookName = document
                         .getElementById("uploadNewBookName")
                         .value.trim();
                     
@@ -5026,14 +5058,23 @@
                         return;
                     }
                     
-                    bookName = newBookName;
+                    // Normalize all form inputs: convert full-width to half-width
+                    bookName = normalizeToHalfWidth(newBookName);
                     
-                    // Get metadata from form
+                    // Get metadata from form and normalize
                     bookMetadata = {
-                        author: document.getElementById("uploadNewBookAuthor")?.value.trim() || null,
-                        category: document.getElementById("uploadNewBookCategory")?.value.trim() || null,
-                        description: document.getElementById("uploadNewBookDescription")?.value.trim() || null,
-                        sourceUrl: document.getElementById("uploadNewBookSourceUrl")?.value.trim() || null,
+                        author: document.getElementById("uploadNewBookAuthor")?.value.trim() 
+                            ? normalizeToHalfWidth(document.getElementById("uploadNewBookAuthor").value.trim())
+                            : null,
+                        category: document.getElementById("uploadNewBookCategory")?.value.trim()
+                            ? normalizeToHalfWidth(document.getElementById("uploadNewBookCategory").value.trim())
+                            : null,
+                        description: document.getElementById("uploadNewBookDescription")?.value.trim()
+                            ? normalizeToHalfWidth(document.getElementById("uploadNewBookDescription").value.trim())
+                            : null,
+                        sourceUrl: document.getElementById("uploadNewBookSourceUrl")?.value.trim()
+                            ? normalizeToHalfWidth(document.getElementById("uploadNewBookSourceUrl").value.trim())
+                            : null,
                     };
                 } else {
                     const selectedBook = books.find((b) => b.id === bookId);

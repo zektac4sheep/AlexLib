@@ -4,6 +4,7 @@ const cool18Scraper = require('../services/cool18Scraper');
 const chapterExtractor = require('../services/chapterExtractor');
 const bookDetector = require('../services/bookDetector');
 const converter = require('../services/converter');
+const { normalizeToHalfWidth } = require('../services/converter');
 const Book = require('../models/book');
 const SearchResult = require('../models/searchResult');
 const botStatusService = require('../services/botStatusService');
@@ -13,11 +14,14 @@ const logger = require('../utils/logger');
  * Search Cool18 forum and return processed results
  */
 router.get('/', async (req, res) => {
-  const { keyword, pages = 3 } = req.query;
+  let { keyword, pages = 3 } = req.query;
   
   if (!keyword) {
     return res.status(400).json({ error: 'keyword parameter is required' });
   }
+  
+  // Normalize keyword: convert full-width to half-width
+  keyword = normalizeToHalfWidth(keyword.trim());
   
   const searchId = `search-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
@@ -80,7 +84,12 @@ router.get('/', async (req, res) => {
  */
 router.get('/history', async (req, res) => {
   try {
-    const { keyword, limit = 50 } = req.query;
+    let { keyword, limit = 50 } = req.query;
+    
+    // Normalize keyword if provided
+    if (keyword) {
+      keyword = normalizeToHalfWidth(keyword.trim());
+    }
     
     let results;
     if (keyword) {
@@ -161,11 +170,14 @@ router.delete('/:id', async (req, res) => {
  * Parse uploaded HTML search page instead of crawling Cool18
  */
 router.post('/html', async (req, res) => {
-  const { htmlContent, keyword = '', pages = 1 } = req.body || {};
+  let { htmlContent, keyword = '', pages = 1 } = req.body || {};
 
   if (!htmlContent || typeof htmlContent !== 'string' || htmlContent.trim() === '') {
     return res.status(400).json({ error: 'htmlContent is required' });
   }
+
+  // Normalize keyword: convert full-width to half-width
+  keyword = keyword ? normalizeToHalfWidth(keyword.trim()) : 'uploaded-html';
 
   const searchId = `search-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 

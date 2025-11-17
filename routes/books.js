@@ -4,6 +4,7 @@ const Book = require("../models/book");
 const Chapter = require("../models/chapter");
 const cool18Scraper = require("../services/cool18Scraper");
 const converter = require("../services/converter");
+const { normalizeToHalfWidth } = require("../services/converter");
 const textProcessor = require("../services/textProcessor");
 const chapterExtractor = require("../services/chapterExtractor");
 const logger = require("../utils/logger");
@@ -166,7 +167,7 @@ router.get("/:id/chapters", async (req, res) => {
 // Create new book
 router.post("/", async (req, res) => {
     try {
-        const {
+        let {
             book_name_simplified,
             book_name_traditional,
             author,
@@ -180,6 +181,21 @@ router.post("/", async (req, res) => {
             return res
                 .status(400)
                 .json({ error: "book_name_simplified is required" });
+        }
+
+        // Normalize all text inputs: convert full-width to half-width
+        book_name_simplified = normalizeToHalfWidth(book_name_simplified.trim());
+        if (book_name_traditional) {
+            book_name_traditional = normalizeToHalfWidth(book_name_traditional.trim());
+        }
+        if (author) {
+            author = normalizeToHalfWidth(author.trim());
+        }
+        if (category) {
+            category = normalizeToHalfWidth(category.trim());
+        }
+        if (description) {
+            description = normalizeToHalfWidth(description.trim());
         }
 
         // Check if book already exists
@@ -214,13 +230,31 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
     try {
         const updates = { ...req.body };
+        
+        // Normalize all text inputs: convert full-width to half-width
+        if (updates.book_name_simplified) {
+            updates.book_name_simplified = normalizeToHalfWidth(updates.book_name_simplified.trim());
+        }
+        if (updates.book_name_traditional) {
+            updates.book_name_traditional = normalizeToHalfWidth(updates.book_name_traditional.trim());
+        }
+        if (updates.author) {
+            updates.author = normalizeToHalfWidth(updates.author.trim());
+        }
+        if (updates.category) {
+            updates.category = normalizeToHalfWidth(updates.category.trim());
+        }
+        if (updates.description) {
+            updates.description = normalizeToHalfWidth(updates.description.trim());
+        }
+        
         // Convert tags array if provided
         if (updates.tags && Array.isArray(updates.tags)) {
             // Tags will be handled in Book.update
         } else if (updates.tags && typeof updates.tags === "string") {
             updates.tags = updates.tags
                 .split(",")
-                .map((t) => t.trim())
+                .map((t) => normalizeToHalfWidth(t.trim()))
                 .filter((t) => t);
         }
         await Book.update(req.params.id, updates);
