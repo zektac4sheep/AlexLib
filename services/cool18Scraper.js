@@ -13,7 +13,7 @@ const COOL18_BASE_URL =
     process.env.COOL18_BASE_URL || "https://www.cool18.com/bbs4";
 const MAX_SEARCH_PAGES = parseInt(process.env.MAX_SEARCH_PAGES || "3");
 const SEARCH_SUBMIT_PARAM = encodeURIComponent("查询");
-const SAVE_HTML = process.env.SAVE_HTML !== "false"; // Default to true, set to 'false' to disable
+const SAVE_HTML = process.env.SAVE_HTML === "true"; // Default to false, set to 'true' to enable
 const HTML_SAVE_DIR = path.join(process.cwd(), "data", "html");
 const SEARCH_URL_BASE = `${COOL18_BASE_URL}/index.php?action=search&bbsdr=bbs4&act=threadsearch&app=forum`;
 
@@ -76,7 +76,7 @@ function extractPageData(html) {
             return pageData;
         }
 
-        logger.warn("_PageData not found in HTML");
+        // Don't log - this is expected in many cases, will warn only if all methods fail
         return null;
     } catch (error) {
         logger.error("Error extracting _PageData", { error: error.message });
@@ -189,7 +189,7 @@ function extractThreadMetadata(html) {
             }
         });
     } else {
-        logger.warn("Target table not found, trying alternative selectors...");
+        // Don't log - this is expected in many cases, will warn only if all methods fail
         // Try alternative selectors as fallback
         const altTable = $("table.dc_bar2").first();
         if (altTable.length > 0) {
@@ -235,9 +235,8 @@ function extractThreadMetadata(html) {
                 }
             }
         });
-    } else {
-        logger.warn("d_list div not found");
     }
+    // Don't log if d_list not found - this is expected in many cases, will warn only if all methods fail
 
     // If still no threads found, try searching all links in the document for thread links
     // This handles search result pages that use different HTML structures
@@ -277,6 +276,15 @@ function extractThreadMetadata(html) {
         hasDList: dListDiv.length > 0,
         usedPageData: pageData !== null,
     });
+
+    // Only warn if all methods failed to find any threads
+    if (threads.length === 0) {
+        logger.warn("All thread extraction methods failed - no threads found", {
+            hasPageData: pageData !== null,
+            hasTable: targetTable.length > 0,
+            hasDList: dListDiv.length > 0,
+        });
+    }
 
     return threads;
 }
@@ -352,6 +360,7 @@ async function searchForum(keyword, maxPages = MAX_SEARCH_PAGES) {
 
     const allThreads = [];
     const seenUrls = new Set();
+    const searchUrls = []; // Track search URLs used
 
     try {
         // Cool18 search URL format (may need adjustment)
@@ -366,6 +375,9 @@ async function searchForum(keyword, maxPages = MAX_SEARCH_PAGES) {
                     keyword
                 )}&submit=%E6%9F%A5%E8%AF%A2`;
                 //        nst searchUrl = `${searchBaseUrl}?app=forum&act=search&keyword=${encodeURIComponent(keyword)}&page=${page}`;
+                
+                // Track the search URL
+                searchUrls.push(searchUrl);
 
                 logger.debug("Fetching Cool18 search page", { searchUrl });
                 const response = await axios.get(searchUrl, {
@@ -477,7 +489,11 @@ async function searchForum(keyword, maxPages = MAX_SEARCH_PAGES) {
         throw error;
     }
 
-    return allThreads;
+    // Return both threads and search URLs
+    return {
+        threads: allThreads,
+        searchUrls: searchUrls
+    };
 }
 
 /**

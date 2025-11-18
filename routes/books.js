@@ -2,11 +2,15 @@ const express = require("express");
 const router = express.Router();
 const Book = require("../models/book");
 const Chapter = require("../models/chapter");
+const BookSearchJob = require("../models/bookSearchJob");
+const SearchResult = require("../models/searchResult");
 const cool18Scraper = require("../services/cool18Scraper");
 const converter = require("../services/converter");
 const { normalizeToHalfWidth } = require("../services/converter");
 const textProcessor = require("../services/textProcessor");
 const chapterExtractor = require("../services/chapterExtractor");
+const { sortChaptersForExport } = require("../services/chunker");
+const bookSearchService = require("../services/bookSearchService");
 const logger = require("../utils/logger");
 
 // Get all books
@@ -138,11 +142,25 @@ router.get("/:id", async (req, res) => {
 
         const chapters = await Chapter.findByBookId(req.params.id);
         const tags = await Book.getTags(req.params.id);
+        const authors = await Book.getAuthors(req.params.id);
+
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChapters = sortChaptersForExport(
+            chapters.map((ch) => ({
+                chapterNumber: ch.chapter_number,
+                ...ch,
+            }))
+        ).map((ch) => {
+            // Remove chapterNumber if it was added, keep original structure
+            const { chapterNumber, ...rest } = ch;
+            return rest;
+        });
 
         res.json({
             ...book,
-            chapters,
+            chapters: sortedChapters,
             tags,
+            authors,
         });
     } catch (error) {
         logger.error("Error fetching book", { bookId: req.params.id, error });
@@ -154,7 +172,18 @@ router.get("/:id", async (req, res) => {
 router.get("/:id/chapters", async (req, res) => {
     try {
         const chapters = await Chapter.findByBookId(req.params.id);
-        res.json(chapters);
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChapters = sortChaptersForExport(
+            chapters.map((ch) => ({
+                chapterNumber: ch.chapter_number,
+                ...ch,
+            }))
+        ).map((ch) => {
+            // Remove chapterNumber if it was added, keep original structure
+            const { chapterNumber, ...rest } = ch;
+            return rest;
+        });
+        res.json(sortedChapters);
     } catch (error) {
         logger.error("Error fetching chapters", {
             bookId: req.params.id,
@@ -171,10 +200,13 @@ router.post("/", async (req, res) => {
             book_name_simplified,
             book_name_traditional,
             author,
+            authors,
             category,
             description,
             source_url,
             tags,
+            sync_to_joplin,
+            auto_search,
         } = req.body;
 
         if (!book_name_simplified) {
@@ -184,9 +216,13 @@ router.post("/", async (req, res) => {
         }
 
         // Normalize all text inputs: convert full-width to half-width
-        book_name_simplified = normalizeToHalfWidth(book_name_simplified.trim());
+        book_name_simplified = normalizeToHalfWidth(
+            book_name_simplified.trim()
+        );
         if (book_name_traditional) {
-            book_name_traditional = normalizeToHalfWidth(book_name_traditional.trim());
+            book_name_traditional = normalizeToHalfWidth(
+                book_name_traditional.trim()
+            );
         }
         if (author) {
             author = normalizeToHalfWidth(author.trim());
@@ -204,12 +240,36 @@ router.post("/", async (req, res) => {
             return res.json(existing);
         }
 
+        // Handle authors - support both array and single author for backward compatibility
+        let authorsArray = [];
+        if (authors && Array.isArray(authors) && authors.length > 0) {
+            authorsArray = authors
+                .map((a) => normalizeToHalfWidth(a.trim()))
+                .filter((a) => a);
+        } else if (authors && typeof authors === "string") {
+            authorsArray = authors
+                .split(",")
+                .map((a) => normalizeToHalfWidth(a.trim()))
+                .filter((a) => a);
+        } else if (author) {
+            authorsArray = [normalizeToHalfWidth(author.trim())];
+        }
+
         const metadata = {
-            author,
+            author, // Keep for backward compatibility
+            authors: authorsArray.length > 0 ? authorsArray : undefined,
             category,
             description,
             sourceUrl: source_url,
             tags: tags || [],
+            sync_to_joplin:
+                sync_to_joplin === true ||
+                sync_to_joplin === 1 ||
+                sync_to_joplin === "true",
+            auto_search:
+                auto_search === true ||
+                auto_search === 1 ||
+                auto_search === "true",
         };
 
         const bookId = await Book.create(
@@ -219,7 +279,8 @@ router.post("/", async (req, res) => {
         );
         const book = await Book.findById(bookId);
         const bookTags = await Book.getTags(bookId);
-        res.status(201).json({ ...book, tags: bookTags });
+        const bookAuthors = await Book.getAuthors(bookId);
+        res.status(201).json({ ...book, tags: bookTags, authors: bookAuthors });
     } catch (error) {
         logger.error("Error creating book", { error });
         res.status(500).json({ error: "Failed to create book" });
@@ -230,13 +291,17 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
     try {
         const updates = { ...req.body };
-        
+
         // Normalize all text inputs: convert full-width to half-width
         if (updates.book_name_simplified) {
-            updates.book_name_simplified = normalizeToHalfWidth(updates.book_name_simplified.trim());
+            updates.book_name_simplified = normalizeToHalfWidth(
+                updates.book_name_simplified.trim()
+            );
         }
         if (updates.book_name_traditional) {
-            updates.book_name_traditional = normalizeToHalfWidth(updates.book_name_traditional.trim());
+            updates.book_name_traditional = normalizeToHalfWidth(
+                updates.book_name_traditional.trim()
+            );
         }
         if (updates.author) {
             updates.author = normalizeToHalfWidth(updates.author.trim());
@@ -245,9 +310,11 @@ router.put("/:id", async (req, res) => {
             updates.category = normalizeToHalfWidth(updates.category.trim());
         }
         if (updates.description) {
-            updates.description = normalizeToHalfWidth(updates.description.trim());
+            updates.description = normalizeToHalfWidth(
+                updates.description.trim()
+            );
         }
-        
+
         // Convert tags array if provided
         if (updates.tags && Array.isArray(updates.tags)) {
             // Tags will be handled in Book.update
@@ -257,10 +324,24 @@ router.put("/:id", async (req, res) => {
                 .map((t) => normalizeToHalfWidth(t.trim()))
                 .filter((t) => t);
         }
+
+        // Convert authors array if provided
+        if (updates.authors && Array.isArray(updates.authors)) {
+            // Normalize each author
+            updates.authors = updates.authors
+                .map((a) => normalizeToHalfWidth(a.trim()))
+                .filter((a) => a);
+        } else if (updates.authors && typeof updates.authors === "string") {
+            updates.authors = updates.authors
+                .split(",")
+                .map((a) => normalizeToHalfWidth(a.trim()))
+                .filter((a) => a);
+        }
         await Book.update(req.params.id, updates);
         const book = await Book.findById(req.params.id);
         const tags = await Book.getTags(req.params.id);
-        res.json({ ...book, tags });
+        const authors = await Book.getAuthors(req.params.id);
+        res.json({ ...book, tags, authors });
     } catch (error) {
         logger.error("Error updating book", { bookId: req.params.id, error });
         res.status(500).json({ error: "Failed to update book" });
@@ -323,126 +404,163 @@ router.get("/:id/missing-chapters", async (req, res) => {
     }
 });
 
-// Search for missing chapters
-router.post("/:id/search-missing", async (req, res) => {
+// Unified search endpoint - creates a job and returns immediately
+router.post("/:id/search-chapters", async (req, res) => {
     try {
-        const { missingChapters, bookName } = req.body;
-        const book = await Book.findById(req.params.id);
+        const { missingChapters, bookName, pages } = req.body;
+        const bookId = parseInt(req.params.id);
 
+        const book = await Book.findById(bookId);
         if (!book) {
             return res.status(404).json({ error: "Book not found" });
         }
 
-        if (
-            !missingChapters ||
-            !Array.isArray(missingChapters) ||
-            missingChapters.length === 0
-        ) {
-            return res
-                .status(400)
-                .json({ error: "missingChapters array is required" });
-        }
+        // Create search job
+        const searchParams = {
+            missingChapters,
+            bookName,
+            pages: pages || 5,
+        };
 
-        const searchKeyword = bookName || book.book_name_simplified;
-        if (!searchKeyword) {
-            return res
-                .status(400)
-                .json({ error: "Book name is required for search" });
-        }
-
-        // Search for the book on Cool18
-        const cool18Scraper = require("../services/cool18Scraper");
-        const chapterExtractor = require("../services/chapterExtractor");
-
-        const searchResults = await cool18Scraper.searchForum(searchKeyword, 5);
-
-        // Filter results to find chapters matching missing chapter numbers
-        const foundChapters = [];
-        const missingSet = new Set(missingChapters);
-
-        for (const thread of searchResults) {
-            const chapterInfo = chapterExtractor.extractChapterNumber(
-                thread.title
-            );
-            if (chapterInfo && missingSet.has(chapterInfo.number)) {
-                foundChapters.push({
-                    chapterNumber: chapterInfo.number,
-                    title: thread.title,
-                    url: thread.url,
-                    date: thread.date,
-                });
-            }
-        }
-
-        // Also check for multi-chapter pages (e.g., "1-5", "1,2,3", etc.)
-        for (const thread of searchResults) {
-            // Check for range patterns: "1-5", "1~5", "1至5"
-            const rangeMatch = thread.title.match(/(\d+)[-~至到](\d+)/);
-            if (rangeMatch) {
-                const start = parseInt(rangeMatch[1]);
-                const end = parseInt(rangeMatch[2]);
-                for (let i = start; i <= end; i++) {
-                    if (missingSet.has(i)) {
-                        // Check if we already have this chapter
-                        if (
-                            !foundChapters.find((ch) => ch.chapterNumber === i)
-                        ) {
-                            foundChapters.push({
-                                chapterNumber: i,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                range: `${start}-${end}`,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Check for comma-separated chapters: "1,2,3" or "1, 2, 3"
-            const commaMatch = thread.title.match(/(\d+(?:\s*,\s*\d+)+)/);
-            if (commaMatch) {
-                const numbers = commaMatch[1]
-                    .split(",")
-                    .map((n) => parseInt(n.trim()));
-                for (const num of numbers) {
-                    if (missingSet.has(num)) {
-                        if (
-                            !foundChapters.find(
-                                (ch) => ch.chapterNumber === num
-                            )
-                        ) {
-                            foundChapters.push({
-                                chapterNumber: num,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                chapters: numbers,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort by chapter number
-        foundChapters.sort((a, b) => a.chapterNumber - b.chapterNumber);
+        const jobId = await BookSearchJob.create(bookId, searchParams);
 
         res.json({
-            foundChapters,
-            searchedFor: missingChapters,
-            foundCount: foundChapters.length,
-            missingCount: missingChapters.length,
+            message: "Search job created",
+            jobId,
+            status: "queued",
         });
     } catch (error) {
-        logger.error("Error searching for missing chapters", {
+        logger.error("Error creating search job", {
             bookId: req.params.id,
             error,
         });
         res.status(500).json({
-            error: "Failed to search for missing chapters",
+            error: "Failed to create search job",
+            message: error.message,
+        });
+    }
+});
+
+// Get search job status
+router.get("/:id/search-jobs/:jobId", async (req, res) => {
+    try {
+        const jobId = parseInt(req.params.jobId);
+        const bookId = parseInt(req.params.id);
+
+        const job = await BookSearchJob.findById(jobId);
+        if (!job) {
+            return res.status(404).json({ error: "Search job not found" });
+        }
+
+        if (job.book_id !== bookId) {
+            return res
+                .status(400)
+                .json({ error: "Job does not belong to this book" });
+        }
+
+        res.json(job);
+    } catch (error) {
+        logger.error("Error fetching search job", {
+            jobId: req.params.jobId,
+            error,
+        });
+        res.status(500).json({
+            error: "Failed to fetch search job",
+            message: error.message,
+        });
+    }
+});
+
+// Get all search jobs for a book
+router.get("/:id/search-jobs", async (req, res) => {
+    try {
+        const bookId = parseInt(req.params.id);
+        const { limit = 20 } = req.query;
+
+        const book = await Book.findById(bookId);
+        if (!book) {
+            return res.status(404).json({ error: "Book not found" });
+        }
+
+        const jobs = await BookSearchJob.findByBookId(bookId, parseInt(limit));
+        res.json({
+            total: jobs.length,
+            jobs,
+        });
+    } catch (error) {
+        logger.error("Error fetching search jobs", {
+            bookId: req.params.id,
+            error,
+        });
+        res.status(500).json({
+            error: "Failed to fetch search jobs",
+            message: error.message,
+        });
+    }
+});
+
+// Get search results from a completed job
+router.get("/:id/search-jobs/:jobId/results", async (req, res) => {
+    try {
+        const jobId = parseInt(req.params.jobId);
+        const bookId = parseInt(req.params.id);
+
+        const job = await BookSearchJob.findById(jobId);
+        if (!job) {
+            return res.status(404).json({ error: "Search job not found" });
+        }
+
+        if (job.book_id !== bookId) {
+            return res
+                .status(400)
+                .json({ error: "Job does not belong to this book" });
+        }
+
+        // Allow both "completed" and "waiting_for_input" statuses
+        // "waiting_for_input" means the job found results and is waiting for user to review
+        if (job.status !== "completed" && job.status !== "waiting_for_input") {
+            return res.status(400).json({
+                error: "Search job is not ready. Job must be completed or waiting for input.",
+                status: job.status,
+            });
+        }
+
+        // If job has a search_result_id, fetch from SearchResult table
+        if (job.search_result_id) {
+            const searchResult = await SearchResult.findById(
+                job.search_result_id
+            );
+            if (searchResult) {
+                return res.json({
+                    keyword: searchResult.keyword,
+                    totalResults:
+                        searchResult.total_results ||
+                        (searchResult.results
+                            ? searchResult.results.length
+                            : 0),
+                    threads: searchResult.results || [],
+                    searchResultId: searchResult.id,
+                    jobId: job.id,
+                });
+            }
+        }
+
+        // Fallback to job results if available
+        if (job.results) {
+            return res.json({
+                ...job.results,
+                jobId: job.id,
+            });
+        }
+
+        res.status(404).json({ error: "No results found for this job" });
+    } catch (error) {
+        logger.error("Error fetching search results", {
+            jobId: req.params.jobId,
+            error,
+        });
+        res.status(500).json({
+            error: "Failed to fetch search results",
             message: error.message,
         });
     }
@@ -638,11 +756,20 @@ router.put("/:bookId/chapters/:chapterId", async (req, res) => {
             updates.chapter_title_simplified =
                 req.body.chapter_title_simplified;
         }
+        if (req.body.chapter_name !== undefined) {
+            updates.chapter_name = req.body.chapter_name;
+        }
         if (req.body.content !== undefined) {
             updates.content = req.body.content;
         }
         if (req.body.status !== undefined) {
             updates.status = req.body.status;
+        }
+        if (req.body.line_start !== undefined) {
+            updates.line_start = req.body.line_start;
+        }
+        if (req.body.line_end !== undefined) {
+            updates.line_end = req.body.line_end;
         }
 
         await Chapter.updateById(req.params.chapterId, updates);
@@ -720,6 +847,78 @@ router.post("/:bookId/reformat-chapters", async (req, res) => {
                     continue; // Skip empty chapters
                 }
 
+                // Check if content contains multiple chapters
+                const fileAnalyzer = require("../services/fileAnalyzer");
+                const detectedChapters = fileAnalyzer.detectChapters(
+                    chapter.content
+                );
+
+                // If multiple chapters detected, split and save each separately
+                if (detectedChapters && detectedChapters.length > 1) {
+                    logger.info(
+                        "Multiple chapters detected in chapter content during reformat",
+                        {
+                            chapterId: chapter.id,
+                            chapterNumber: chapter.chapter_number,
+                            detectedCount: detectedChapters.length,
+                        }
+                    );
+
+                    // Delete the original chapter (it will be replaced by split chapters)
+                    await Chapter.delete(chapter.id);
+
+                    // Process each detected chapter
+                    for (const detectedChapter of detectedChapters) {
+                        const detectedChapterNumber = detectedChapter.number;
+                        const detectedChapterTitle =
+                            detectedChapter.title ||
+                            `第${detectedChapterNumber}章`;
+                        const detectedChapterName = detectedChapter.name || "";
+
+                        // Reformat each chapter content
+                        const reformattedContent =
+                            textProcessor.reformatChapterContent(
+                                detectedChapter.content,
+                                detectedChapterTitle,
+                                true // Convert to Traditional Chinese
+                            );
+
+                        const chapterData = {
+                            book_id: bookId,
+                            chapter_number: detectedChapterNumber,
+                            chapter_title:
+                                converter.toTraditional(detectedChapterTitle),
+                            chapter_title_simplified: detectedChapterTitle,
+                            chapter_name: detectedChapterName,
+                            content: reformattedContent,
+                            status: "downloaded",
+                        };
+
+                        // Check if chapter already exists
+                        const existingChapter =
+                            await Chapter.findByBookAndNumber(
+                                bookId,
+                                detectedChapterNumber
+                            );
+
+                        if (existingChapter) {
+                            // Update existing chapter
+                            await Chapter.updateByBookAndNumber(
+                                bookId,
+                                detectedChapterNumber,
+                                chapterData
+                            );
+                        } else {
+                            // Create new chapter
+                            await Chapter.create(chapterData);
+                        }
+                    }
+
+                    reformatted++;
+                    continue;
+                }
+
+                // Single chapter - process normally
                 // Extract chapter number and name from content
                 let detectedChapterNumber = chapter.chapter_number;
                 let detectedChapterName = chapter.chapter_name || "";
@@ -827,269 +1026,194 @@ router.post("/:bookId/reformat-chapters", async (req, res) => {
     }
 });
 
-// Search down for lower number chapters
-router.post("/:id/search-down", async (req, res) => {
+// Extract thread metadata from URL
+router.post("/extract-thread", async (req, res) => {
     try {
-        const book = await Book.findById(req.params.id);
-        if (!book) {
-            return res.status(404).json({ error: "Book not found" });
+        const { url } = req.body;
+
+        if (!url) {
+            return res.status(400).json({ error: "URL is required" });
         }
 
-        const chapters = await Chapter.findByBookId(req.params.id);
-        const chapterNumbers = chapters
-            .filter((ch) => ch.chapter_number !== null && ch.chapter_number !== undefined)
-            .map((ch) => ch.chapter_number)
-            .sort((a, b) => a - b);
+        // Extract thread metadata
+        const metadata = await cool18Scraper.extractBookMetadata(url);
 
-        if (chapterNumbers.length === 0) {
-            return res.status(400).json({ error: "No chapters found for this book" });
-        }
-
-        const minChapter = Math.min(...chapterNumbers);
-        const searchKeyword = book.book_name_simplified;
-        if (!searchKeyword) {
-            return res.status(400).json({ error: "Book name is required for search" });
-        }
-
-        const cool18Scraper = require("../services/cool18Scraper");
-        const chapterExtractor = require("../services/chapterExtractor");
-
-        // Search with book name (up to 5 pages)
-        const searchResults = await cool18Scraper.searchForum(searchKeyword, 5);
-        const foundChapters = [];
-        const existingChapters = new Set(chapterNumbers);
-        const seenUrls = new Set();
-
-        // Helper function to add chapter if not seen
-        const addChapterIfNew = (chapter) => {
-            if (!seenUrls.has(chapter.url)) {
-                seenUrls.add(chapter.url);
-                foundChapters.push(chapter);
-            }
-        };
-
-        // Process search results from book name
-        const processSearchResults = (results) => {
-            // Find chapters with numbers lower than minChapter, up to chapter 1
-            for (const thread of results) {
-                const chapterInfo = chapterExtractor.extractChapterNumber(thread.title);
-                if (chapterInfo && chapterInfo.number < minChapter && chapterInfo.number >= 1) {
-                    // Only add if we don't already have this chapter
-                    if (!existingChapters.has(chapterInfo.number)) {
-                        addChapterIfNew({
-                            chapterNumber: chapterInfo.number,
-                            title: thread.title,
-                            url: thread.url,
-                            date: thread.date,
-                        });
-                    }
-                }
-            }
-
-            // Also check for multi-chapter pages
-            for (const thread of results) {
-                const rangeMatch = thread.title.match(/(\d+)[-~至到](\d+)/);
-                if (rangeMatch) {
-                    const start = parseInt(rangeMatch[1]);
-                    const end = parseInt(rangeMatch[2]);
-                    for (let i = start; i <= end; i++) {
-                        if (i < minChapter && i >= 1 && !existingChapters.has(i)) {
-                            addChapterIfNew({
-                                chapterNumber: i,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                range: `${start}-${end}`,
-                            });
-                        }
-                    }
-                }
-
-                const commaMatch = thread.title.match(/(\d+(?:\s*,\s*\d+)+)/);
-                if (commaMatch) {
-                    const numbers = commaMatch[1]
-                        .split(",")
-                        .map((n) => parseInt(n.trim()));
-                    for (const num of numbers) {
-                        if (num < minChapter && num >= 1 && !existingChapters.has(num)) {
-                            addChapterIfNew({
-                                chapterNumber: num,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                chapters: numbers,
-                            });
-                        }
-                    }
-                }
-            }
-        };
-
-        // Process results from book name search
-        processSearchResults(searchResults);
-
-        // Also search with author name if available
-        if (book.author && book.author.trim()) {
-            try {
-                const authorSearchResults = await cool18Scraper.searchForum(book.author.trim(), 5);
-                processSearchResults(authorSearchResults);
-            } catch (error) {
-                logger.warn("Error searching with author name", { author: book.author, error });
-                // Continue even if author search fails
-            }
-        }
-
-        // Sort by chapter number (ascending)
-        foundChapters.sort((a, b) => a.chapterNumber - b.chapterNumber);
-
-        res.json({
-            foundChapters,
-            minChapter,
-            searchKeyword,
-            authorSearched: book.author || null,
-            pagesSearched: 5,
-        });
+        res.json(metadata);
     } catch (error) {
-        logger.error("Error searching down for chapters", {
-            bookId: req.params.id,
-            error,
+        logger.error("Error extracting thread metadata", { error });
+        res.status(500).json({
+            error: "Failed to extract thread metadata",
+            message: error.message,
         });
-        res.status(500).json({ error: "Failed to search down for chapters", message: error.message });
     }
 });
 
-// Search up for new higher number chapters
-router.post("/:id/search-new", async (req, res) => {
+// Add chapters by URL to a book
+router.post("/:id/add-chapters-url", async (req, res) => {
     try {
-        const book = await Book.findById(req.params.id);
+        const bookId = parseInt(req.params.id);
+        const { chapters } = req.body;
+
+        if (!chapters || !Array.isArray(chapters) || chapters.length === 0) {
+            return res.status(400).json({ error: "chapters array is required" });
+        }
+
+        const book = await Book.findById(bookId);
         if (!book) {
             return res.status(404).json({ error: "Book not found" });
         }
 
-        const chapters = await Chapter.findByBookId(req.params.id);
-        const chapterNumbers = chapters
-            .filter((ch) => ch.chapter_number !== null && ch.chapter_number !== undefined)
-            .map((ch) => ch.chapter_number)
-            .sort((a, b) => a - b);
+        // Use the download service to add chapters
+        const DownloadJob = require("../models/download");
+        const downloadService = require("../services/downloadService");
 
-        if (chapterNumbers.length === 0) {
-            return res.status(400).json({ error: "No chapters found for this book" });
-        }
+        // Create download job
+        const jobId = await DownloadJob.create(bookId, chapters.length, chapters);
 
-        const maxChapter = Math.max(...chapterNumbers);
-        const searchKeyword = book.book_name_simplified;
-        if (!searchKeyword) {
-            return res.status(400).json({ error: "Book name is required for search" });
-        }
-
-        const cool18Scraper = require("../services/cool18Scraper");
-        const chapterExtractor = require("../services/chapterExtractor");
-
-        // Search with book name (only 3 pages)
-        const searchResults = await cool18Scraper.searchForum(searchKeyword, 3);
-        const foundChapters = [];
-        const existingChapters = new Set(chapterNumbers);
-        const seenUrls = new Set();
-
-        // Helper function to add chapter if not seen
-        const addChapterIfNew = (chapter) => {
-            if (!seenUrls.has(chapter.url)) {
-                seenUrls.add(chapter.url);
-                foundChapters.push(chapter);
+        // Start processing asynchronously
+        const processDownloadJobAsync = require("./download").processDownloadJobAsync;
+        processDownloadJobAsync(jobId, chapters, bookId, book.book_name_simplified, null).catch(
+            (error) => {
+                logger.error("Error in async download processing", {
+                    jobId,
+                    error: {
+                        message: error.message,
+                        stack: error.stack,
+                        name: error.name,
+                    },
+                });
             }
-        };
-
-        // Process search results
-        const processSearchResults = (results) => {
-            // Find chapters with numbers higher than maxChapter
-            for (const thread of results) {
-                const chapterInfo = chapterExtractor.extractChapterNumber(thread.title);
-                if (chapterInfo && chapterInfo.number > maxChapter) {
-                    // Only add if we don't already have this chapter
-                    if (!existingChapters.has(chapterInfo.number)) {
-                        addChapterIfNew({
-                            chapterNumber: chapterInfo.number,
-                            title: thread.title,
-                            url: thread.url,
-                            date: thread.date,
-                        });
-                    }
-                }
-            }
-
-            // Also check for multi-chapter pages
-            for (const thread of results) {
-                const rangeMatch = thread.title.match(/(\d+)[-~至到](\d+)/);
-                if (rangeMatch) {
-                    const start = parseInt(rangeMatch[1]);
-                    const end = parseInt(rangeMatch[2]);
-                    for (let i = start; i <= end; i++) {
-                        if (i > maxChapter && !existingChapters.has(i)) {
-                            addChapterIfNew({
-                                chapterNumber: i,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                range: `${start}-${end}`,
-                            });
-                        }
-                    }
-                }
-
-                const commaMatch = thread.title.match(/(\d+(?:\s*,\s*\d+)+)/);
-                if (commaMatch) {
-                    const numbers = commaMatch[1]
-                        .split(",")
-                        .map((n) => parseInt(n.trim()));
-                    for (const num of numbers) {
-                        if (num > maxChapter && !existingChapters.has(num)) {
-                            addChapterIfNew({
-                                chapterNumber: num,
-                                title: thread.title,
-                                url: thread.url,
-                                date: thread.date,
-                                isMultiChapter: true,
-                                chapters: numbers,
-                            });
-                        }
-                    }
-                }
-            }
-        };
-
-        // Process results from book name search
-        processSearchResults(searchResults);
-
-        // Also search with author name if available
-        if (book.author && book.author.trim()) {
-            try {
-                const authorSearchResults = await cool18Scraper.searchForum(book.author.trim(), 3);
-                processSearchResults(authorSearchResults);
-            } catch (error) {
-                logger.warn("Error searching with author name", { author: book.author, error });
-                // Continue even if author search fails
-            }
-        }
-
-        // Sort by chapter number (ascending)
-        foundChapters.sort((a, b) => a.chapterNumber - b.chapterNumber);
+        );
 
         res.json({
-            foundChapters,
-            maxChapter,
-            searchKeyword,
-            authorSearched: book.author || null,
-            pagesSearched: 3,
+            jobId,
+            status: "queued",
+            message: "Download job created and started",
+            totalChapters: chapters.length,
+            bookId,
         });
     } catch (error) {
-        logger.error("Error searching for new chapters", {
+        logger.error("Error adding chapters by URL", {
             bookId: req.params.id,
             error,
         });
-        res.status(500).json({ error: "Failed to search for new chapters", message: error.message });
+        res.status(500).json({
+            error: "Failed to add chapters",
+            message: error.message,
+        });
+    }
+});
+
+// Add chapters by file to a book
+router.post("/add-chapters-file", async (req, res) => {
+    try {
+        const multer = require("multer");
+        const path = require("path");
+        const fs = require("fs");
+        const uploadService = require("../services/uploadService");
+        const UploadJob = require("../models/uploadJob");
+
+        // Setup multer for file upload
+        const tempDir = path.join(__dirname, "..", "temp");
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const storage = multer.diskStorage({
+            destination: (req, file, cb) => {
+                cb(null, tempDir);
+            },
+            filename: (req, file, cb) => {
+                const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+                cb(null, `chapter-${uniqueSuffix}${path.extname(file.originalname)}`);
+            },
+        });
+
+        const upload = multer({ storage: storage }).single("file");
+
+        // Handle file upload
+        upload(req, res, async (err) => {
+            if (err) {
+                logger.error("Error uploading file", { error: err });
+                return res.status(400).json({ error: "File upload failed", message: err.message });
+            }
+
+            if (!req.file) {
+                return res.status(400).json({ error: "No file uploaded" });
+            }
+
+            const bookId = parseInt(req.body.bookId);
+            if (!bookId) {
+                // Clean up uploaded file
+                fs.unlinkSync(req.file.path);
+                return res.status(400).json({ error: "bookId is required" });
+            }
+
+            const book = await Book.findById(bookId);
+            if (!book) {
+                // Clean up uploaded file
+                fs.unlinkSync(req.file.path);
+                return res.status(404).json({ error: "Book not found" });
+            }
+
+            try {
+                // Analyze the file
+                const fileAnalyzer = require("../services/fileAnalyzer");
+                const analysis = await fileAnalyzer.analyzeFile(req.file.path);
+
+                // Create upload job
+                const jobId = await UploadJob.create(
+                    req.file.filename,
+                    req.file.originalname,
+                    req.file.path,
+                    req.file.size,
+                    analysis
+                );
+
+                // Update job with book ID and start processing
+                await UploadJob.update(jobId, {
+                    book_id: bookId,
+                    status: "queued",
+                    started_at: new Date().toISOString(),
+                });
+
+                // Start processing asynchronously
+                if (uploadService && uploadService.processUploadJobAsync) {
+                    uploadService.processUploadJobAsync(jobId).catch((error) => {
+                        logger.error("Error in async upload processing", {
+                            jobId,
+                            error,
+                        });
+                    });
+                }
+
+                res.json({
+                    jobId,
+                    status: "queued",
+                    message: "File uploaded and processing started",
+                    bookId,
+                });
+            } catch (error) {
+                // Clean up uploaded file on error
+                if (fs.existsSync(req.file.path)) {
+                    fs.unlinkSync(req.file.path);
+                }
+                logger.error("Error processing uploaded file", {
+                    bookId,
+                    error,
+                });
+                res.status(500).json({
+                    error: "Failed to process file",
+                    message: error.message,
+                });
+            }
+        });
+    } catch (error) {
+        logger.error("Error in add-chapters-file endpoint", { error });
+        res.status(500).json({
+            error: "Failed to add chapters from file",
+            message: error.message,
+        });
     }
 });
 

@@ -8,6 +8,7 @@ const Book = require("../models/book");
 const Chapter = require("../models/chapter");
 const { analyzeFile } = require("../services/fileAnalyzer");
 const { toTraditional, normalizeToHalfWidth } = require("../services/converter");
+const { sortChaptersForExport } = require("../services/chunker");
 const botStatusService = require("../services/botStatusService");
 const logger = require("../utils/logger");
 
@@ -306,8 +307,11 @@ router.post("/process", async (req, res) => {
         let updatedCount = 0;
         let errorCount = 0;
 
-        for (let i = 0; i < analysis.chapters.length; i++) {
-            const chapter = analysis.chapters[i];
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChapters = sortChaptersForExport(analysis.chapters);
+
+        for (let i = 0; i < sortedChapters.length; i++) {
+            const chapter = sortedChapters[i];
             try {
                 const chapterTitleTraditional = toTraditional(chapter.title);
 
@@ -539,8 +543,11 @@ router.post("/extract-and-create", async (req, res) => {
             });
         }
 
-        for (let i = 0; i < analysis.chapters.length; i++) {
-            const chapter = analysis.chapters[i];
+        // Sort chapters: regular chapters first, final chapters (-1) at the end
+        const sortedChaptersExtract = sortChaptersForExport(analysis.chapters);
+
+        for (let i = 0; i < sortedChaptersExtract.length; i++) {
+            const chapter = sortedChaptersExtract[i];
             try {
                 // Validate chapter number
                 if (chapter.number === null || chapter.number === undefined) {

@@ -84,8 +84,8 @@ router.post("/start", async (req, res) => {
             }
         }
 
-        // Create download job with the final book ID
-        const jobId = await DownloadJob.create(finalBookId, chapters.length);
+        // Create download job with the final book ID and chapter data
+        const jobId = await DownloadJob.create(finalBookId, chapters.length, chapters);
 
         // Start processing asynchronously (don't wait for completion)
         processDownloadJobAsync(
@@ -155,28 +155,7 @@ async function processDownloadJobAsync(
     }
 }
 
-// Get download job status
-router.get("/:jobId/status", async (req, res) => {
-    try {
-        const job = await DownloadJob.findById(req.params.jobId);
-        if (!job) {
-            return res.status(404).json({ error: "Download job not found" });
-        }
-        res.json(job);
-    } catch (error) {
-        logger.error("Error fetching download job", {
-            jobId: req.params.jobId,
-            error: {
-                message: error.message,
-                stack: error.stack,
-                name: error.name,
-            },
-        });
-        res.status(500).json({ error: "Failed to fetch download job" });
-    }
-});
-
-// Stream download logs (SSE)
+// Stream download logs (SSE) - must come before /:jobId route
 router.get("/:jobId/stream", (req, res) => {
     const jobId = parseInt(req.params.jobId);
 
@@ -235,6 +214,157 @@ router.get("/:jobId/stream", (req, res) => {
         clearInterval(heartbeat);
         downloadService.unregisterProgressCallback(jobId);
     });
+});
+
+// Retry a specific job - must come before /:jobId route
+router.post("/:jobId/retry", async (req, res) => {
+    try {
+        const jobId = parseInt(req.params.jobId);
+        const job = await DownloadJob.findById(jobId);
+        
+        if (!job) {
+            return res.status(404).json({ error: "Download job not found" });
+        }
+        
+        if (!job.chapters_data || !Array.isArray(job.chapters_data)) {
+            return res.status(400).json({ error: "Job does not have chapter data to retry" });
+        }
+        
+        // Filter to only retry failed chapters
+        const failedChapters = await Chapter.findFailedByJobId(jobId);
+        const failedUrls = new Set(failedChapters.map(ch => ch.cool18_url));
+        
+        // Get chapters that failed (either in failed chapters or not completed)
+        const chaptersToRetry = job.chapters_data.filter(ch => {
+            return failedUrls.has(ch.url) || 
+                   (job.status === "failed" || job.failed_chapters > 0);
+        });
+        
+        if (chaptersToRetry.length === 0) {
+            return res.json({ message: "No failed chapters to retry for this job" });
+        }
+        
+        // Create new download job for retry
+        const newJobId = await DownloadJob.create(job.book_id, chaptersToRetry.length, chaptersToRetry);
+        
+        // Get book name
+        const Book = require("../models/book");
+        let bookName = null;
+        if (job.book_id) {
+            const book = await Book.findById(job.book_id);
+            bookName = book ? book.book_name_simplified : null;
+        }
+        
+        // Start processing
+        processDownloadJobAsync(newJobId, chaptersToRetry, job.book_id, bookName, null).catch(
+            (error) => {
+                logger.error("Error in async retry processing", {
+                    jobId: newJobId,
+                    error: {
+                        message: error.message,
+                        stack: error.stack,
+                        name: error.name,
+                    },
+                });
+            }
+        );
+        
+        res.json({
+            jobId: newJobId,
+            message: `Retrying ${chaptersToRetry.length} chapters from job ${jobId}`,
+            totalChapters: chaptersToRetry.length,
+        });
+    } catch (error) {
+        logger.error("Error retrying job", {
+            jobId: req.params.jobId,
+            error: {
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+            },
+        });
+        res.status(500).json({
+            error: "Failed to retry job",
+            message: error.message,
+        });
+    }
+});
+
+// Get all download jobs
+router.get("/", async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 100;
+        const offset = parseInt(req.query.offset) || 0;
+        const jobs = await DownloadJob.findAll(limit, offset);
+        
+        // Get book names for each job
+        const Book = require("../models/book");
+        const jobsWithBooks = await Promise.all(
+            jobs.map(async (job) => {
+                if (job.book_id) {
+                    const book = await Book.findById(job.book_id);
+                    return {
+                        ...job,
+                        book_name: book ? (book.book_name_traditional || book.book_name_simplified) : null,
+                    };
+                }
+                return job;
+            })
+        );
+        
+        res.json(jobsWithBooks);
+    } catch (error) {
+        logger.error("Error fetching download jobs", {
+            error: {
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+            },
+        });
+        res.status(500).json({ error: "Failed to fetch download jobs" });
+    }
+});
+
+// Get download job status (legacy endpoint)
+router.get("/:jobId/status", async (req, res) => {
+    try {
+        const job = await DownloadJob.findById(req.params.jobId);
+        if (!job) {
+            return res.status(404).json({ error: "Download job not found" });
+        }
+        res.json(job);
+    } catch (error) {
+        logger.error("Error fetching download job", {
+            jobId: req.params.jobId,
+            error: {
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+            },
+        });
+        res.status(500).json({ error: "Failed to fetch download job" });
+    }
+});
+
+// Get download job status (must come after more specific routes)
+router.get("/:jobId", async (req, res) => {
+    try {
+        const job = await DownloadJob.findById(req.params.jobId);
+        if (!job) {
+            return res.status(404).json({ error: "Download job not found" });
+        }
+        res.json(job);
+    } catch (error) {
+        logger.error("Error fetching download job", {
+            jobId: req.params.jobId,
+            error: {
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+            },
+        });
+        res.status(500).json({ error: "Failed to fetch download job" });
+    }
 });
 
 // Retry failed chapters
@@ -297,4 +427,6 @@ router.post("/retry-failed", async (req, res) => {
     }
 });
 
+// Export processDownloadJobAsync for use by job resumption service
 module.exports = router;
+module.exports.processDownloadJobAsync = processDownloadJobAsync;

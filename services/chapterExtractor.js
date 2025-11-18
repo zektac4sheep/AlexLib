@@ -105,7 +105,8 @@ function chineseToNumber(chinese) {
 
 /**
  * Extract chapter number from title
- * Supports: 第1章, 第126章, 第零一章, 第一章, etc.
+ * Supports: 第1章, 第126章, 第零一章, 第一章, (44-46), （44-46）, etc.
+ * For ranges like (44-46), extracts the first number (44)
  * @param {string} title - Chapter title
  * @returns {Object|null} - {number: 126, format: "章", fullMatch: "第126章"} or null
  */
@@ -120,6 +121,14 @@ function extractChapterNumber(title) {
     const digitPattern = `[零一二三四五六七八九十百千万两0-9${fullWidthDigits}]`;
 
     const patterns = [
+        // Pattern 0: "（終）" - parentheses with 終 (check this first before other patterns)
+        /[（(]終[）)]/,
+        // Pattern 0.5: "（44-46）" or "（44－46）" - parentheses with number range (extract first number)
+        // Matches: (44-46), （44-46）, (44－46), （44－46）, etc.
+        // Handles both half-width and full-width dashes/hyphens: - and －
+        new RegExp(
+            `[（(【〔〖〝「『]\\s*(${digitPattern}+)\\s*[-－~～]\\s*${digitPattern}+\\s*[）)】〕〗〞」』]`
+        ),
         // Pattern 1: 第XXX章/回/集/話/篇/部/卷/終 (with valid chapter marker, including 終)
         new RegExp(`第(${digitPattern}+)(章|回|集|話|篇|部|卷|終)`),
         // Pattern 1b: 終章/終回/終集 (終 as standalone marker)
@@ -142,8 +151,18 @@ function extractChapterNumber(title) {
         const pattern = patterns[i];
         const match = title.match(pattern);
         if (match) {
+            // Check if it's the "（終）" pattern (Pattern 0)
+            if (i === 0 && match[0].includes("終")) {
+                return {
+                    number: -1, // Special sentinel value for "終" (will be converted to max+1 by caller)
+                    format: "",
+                    fullMatch: match[0],
+                    isFinal: true, // Flag to indicate this is "終"
+                };
+            }
+
             // Check if it's the "終" pattern (Pattern 1b)
-            if (i === 1 && match[0].includes("終")) {
+            if (i === 2 && match[0].includes("終")) {
                 return {
                     number: -1, // Special sentinel value for "終" (will be converted to max+1 by caller)
                     format: match[1] || "章",

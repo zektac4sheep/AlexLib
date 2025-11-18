@@ -65,6 +65,83 @@ async function downloadChapter(chapterData, jobId) {
 
         // Process content using new formatting rules
         const rawContent = threadData.content;
+        
+        // Check if content contains multiple chapters
+        const fileAnalyzer = require("./fileAnalyzer");
+        const detectedChapters = fileAnalyzer.detectChapters(rawContent);
+        
+        // If multiple chapters detected, split and save each separately
+        if (detectedChapters && detectedChapters.length > 1) {
+            const savedChapters = [];
+            for (const detectedChapter of detectedChapters) {
+                const detectedChapterNumber = detectedChapter.number;
+                const detectedChapterTitle = detectedChapter.title || `第${detectedChapterNumber}章`;
+                const detectedChapterName = detectedChapter.name || "";
+                
+                // Format each chapter content
+                const chapterContent = textProcessor.formatChapterContent(
+                    detectedChapter.content,
+                    detectedChapterTitle,
+                    true // Convert to Traditional Chinese
+                );
+
+                const chapterRecord = {
+                    book_id: bookId,
+                    chapter_number: detectedChapterNumber,
+                    chapter_title: converter.toTraditional(detectedChapterTitle),
+                    chapter_title_simplified: detectedChapterTitle,
+                    chapter_name: detectedChapterName,
+                    job_id: jobId,
+                    cool18_url: url,
+                    cool18_thread_id: cool18Scraper.extractThreadId(url),
+                    content: chapterContent,
+                    status: "downloaded",
+                };
+
+                // Check if chapter already exists
+                const existingChapter = await Chapter.findByBookAndNumber(
+                    bookId,
+                    detectedChapterNumber
+                );
+
+                let chapterId;
+                let wasNew = false;
+                if (existingChapter) {
+                    // Update existing chapter only if action is overwrite or not specified
+                    if (chapterData.action === "overwrite" || !chapterData.action) {
+                        await Chapter.updateByBookAndNumber(
+                            bookId,
+                            detectedChapterNumber,
+                            chapterRecord
+                        );
+                        chapterId = existingChapter.id;
+                    } else {
+                        // Skip if action is discard
+                        continue;
+                    }
+                } else {
+                    // Create new chapter
+                    chapterId = await Chapter.create(chapterRecord);
+                    wasNew = true;
+                }
+
+                savedChapters.push({
+                    id: chapterId,
+                    ...chapterRecord,
+                });
+
+                emitProgress(jobId, {
+                    type: "chapter-complete",
+                    url,
+                    chapterNum: detectedChapterNumber,
+                    message: `Chapter ${detectedChapterNumber} downloaded and split successfully`,
+                });
+            }
+
+            return savedChapters[0]; // Return first chapter for backward compatibility
+        }
+
+        // Single chapter - process normally
         const finalContent = textProcessor.formatChapterContent(
             rawContent,
             chapterTitle,
@@ -81,20 +158,34 @@ async function downloadChapter(chapterData, jobId) {
             cool18_thread_id: cool18Scraper.extractThreadId(url),
             content: finalContent,
             status: "downloaded",
+            job_id: jobId,
         };
 
         let chapterId;
+        let wasNew = false;
         if (existing) {
-            // Update existing chapter
-            await Chapter.updateByBookAndNumber(
-                bookId,
-                chapterNumber,
-                chapterRecord
-            );
-            chapterId = existing.id;
+            // Update existing chapter only if action is overwrite or not specified
+            if (chapterData.action === "overwrite" || !chapterData.action) {
+                await Chapter.updateByBookAndNumber(
+                    bookId,
+                    chapterNumber,
+                    chapterRecord
+                );
+                chapterId = existing.id;
+            } else {
+                // Skip if action is discard
+                emitProgress(jobId, {
+                    type: "chapter-skipped",
+                    url,
+                    chapterNum: chapterNumber,
+                    message: "Chapter skipped (discarded)",
+                });
+                return null;
+            }
         } else {
             // Create new chapter
             chapterId = await Chapter.create(chapterRecord);
+            wasNew = true;
         }
 
         emitProgress(jobId, {
@@ -119,6 +210,7 @@ async function downloadChapter(chapterData, jobId) {
                 chapter_title_simplified: title,
                 cool18_url: url,
                 status: "failed",
+                job_id: jobId,
             };
             await Chapter.create(chapterRecord);
         } catch (dbError) {
@@ -236,11 +328,35 @@ async function processDownloadJob(
             throw new Error("Book ID is required");
         }
 
+        // Track added chapters
+        const addedChapters = [];
+
         // Download chapters concurrently
         const downloadPromises = chapters.map((chapterData) =>
-            limit(() =>
-                downloadChapter({ ...chapterData, bookId: finalBookId }, jobId)
-            )
+            limit(async () => {
+                try {
+                    const result = await downloadChapter({ ...chapterData, bookId: finalBookId }, jobId);
+                    // Track added chapter info
+                    if (result) {
+                        // Handle both single chapter and array (from multi-chapter pages)
+                        const chaptersToTrack = Array.isArray(result) ? result : [result];
+                        for (const ch of chaptersToTrack) {
+                            if (ch && ch.chapter_number !== null && ch.chapter_number !== undefined) {
+                                addedChapters.push({
+                                    chapter_number: ch.chapter_number,
+                                    chapter_title: ch.chapter_title || ch.chapter_title_simplified || "",
+                                    chapter_name: ch.chapter_name || "",
+                                    action: chapterData.action || "new",
+                                    original_number: chapterData.originalNumber || null,
+                                });
+                            }
+                        }
+                    }
+                    return result;
+                } catch (error) {
+                    throw error;
+                }
+            })
         );
 
         const results = await Promise.allSettled(downloadPromises);
@@ -260,10 +376,11 @@ async function processDownloadJob(
         // Update job progress
         await DownloadJob.updateProgress(jobId, completed, failed);
 
-        // Update bot status
+        // Update bot status with added chapters info
         botStatusService.updateOperation("download", jobId, {
             completedChapters: completed,
             failedChapters: failed,
+            addedChapters: addedChapters,
         });
 
         // Update book total chapters
@@ -278,6 +395,14 @@ async function processDownloadJob(
             }
         }
 
+        // Store added chapters info in job results
+        const jobResults = {
+            addedChapters: addedChapters,
+            totalAdded: addedChapters.length,
+            completed: completed,
+            failed: failed,
+        };
+
         // Mark job as completed
         await DownloadJob.updateStatus(jobId, "completed");
 
@@ -286,13 +411,32 @@ async function processDownloadJob(
             status: "completed",
             completedChapters: completed,
             failedChapters: failed,
+            addedChapters: addedChapters,
         });
+
+        // Build summary message
+        const newChapters = addedChapters.filter(ch => ch.action === "new" || !ch.action).length;
+        const overwrittenChapters = addedChapters.filter(ch => ch.action === "overwrite").length;
+        const renumberedChapters = addedChapters.filter(ch => ch.action === "new_number").length;
+        
+        let summaryMessage = `下載完成: ${completed} 成功, ${failed} 失敗。`;
+        if (addedChapters.length > 0) {
+            summaryMessage += ` 新增 ${newChapters} 個章節`;
+            if (overwrittenChapters > 0) {
+                summaryMessage += `, 覆蓋 ${overwrittenChapters} 個章節`;
+            }
+            if (renumberedChapters > 0) {
+                summaryMessage += `, 重新編號 ${renumberedChapters} 個章節`;
+            }
+            summaryMessage += "。";
+        }
 
         emitProgress(jobId, {
             type: "job-complete",
-            message: `Download completed: ${completed} successful, ${failed} failed`,
+            message: summaryMessage,
             completed,
             failed,
+            addedChapters: addedChapters,
         });
 
         return {
@@ -300,6 +444,8 @@ async function processDownloadJob(
             completed,
             failed,
             total: chapters.length,
+            addedChapters: addedChapters,
+            totalAdded: addedChapters.length,
         };
     } catch (error) {
         logger.error("Error processing download job", {

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Alex Library</title>
+        <!-- Bootstrap 5 CSS -->
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+        <!-- Custom CSS -->
+        <link rel="stylesheet" href="/css/styles.css">
+    </head>
+    <body>
+        <div id="app">
+            <div class="main-container">
+                <div class="bg-primary text-white p-3">
+                    <h1 class="h4 mb-0 d-flex align-items-center gap-2">
+                        <a
+                            href="https://game-icons.net/1x1/lorc/cat.html"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-white text-decoration-none"
+                        >
+                            <img
+                                src="https://game-icons.net/icons/000000/transparent/1x1/lorc/cat.svg"
+                                alt="Cat Icon"
+                                class="header-icon"
+                                style="filter: brightness(0) invert(1)"
+                            />
+                        </a>
+                        Alex Library
+                        <span 
+                            :class="['badge', 'bg-secondary', 'bot-status-indicator', { active: botStatus.isActive }]"
+                        >
+                            {{ botStatus.indicator }}
+                        </span>
+                    </h1>
+                </div>
+
+                <ul class="nav nav-tabs bg-light" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'search' }]" 
+                            @click="switchTab('search')" 
+                            type="button"
+                        >
+                            搜尋
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'results' }]" 
+                            @click="switchTab('results')" 
+                            type="button"
+                        >
+                            搜尋結果
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'books' }]" 
+                            @click="switchTab('books')" 
+                            type="button"
+                        >
+                            書籍
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'chapters' }]" 
+                            @click="switchTab('chapters')" 
+                            type="button"
+                        >
+                            章節
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'chunks' }]" 
+                            @click="switchTab('chunks')" 
+                            type="button"
+                        >
+                            分塊預覽
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'upload' }]" 
+                            @click="switchTab('upload')" 
+                            type="button"
+                        >
+                            上傳檔案
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button 
+                            :class="['nav-link', { active: activeTab === 'botStatus' }]" 
+                            @click="switchTab('botStatus')" 
+                            type="button"
+                        >
+                            機器人狀態
+                        </button>
+                    </li>
+                </ul>
+
+                <!-- Tab Content -->
+                <search-tab v-if="activeTab === 'search'"></search-tab>
+                <results-tab v-if="activeTab === 'results'"></results-tab>
+                <books-tab v-if="activeTab === 'books'"></books-tab>
+                <chapters-tab v-if="activeTab === 'chapters'"></chapters-tab>
+                <chunks-tab v-if="activeTab === 'chunks'"></chunks-tab>
+                <upload-tab v-if="activeTab === 'upload'"></upload-tab>
+                <bot-status-tab v-if="activeTab === 'botStatus'"></bot-status-tab>
+
+                <!-- Modals -->
+                <book-metadata-modal></book-metadata-modal>
+                <progress-modal></progress-modal>
+            </div>
+        </div>
+
+        <!-- Vue 2 -->
+        <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+        <!-- Bootstrap 5 JS Bundle -->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+        <!-- API Service (must load before components) -->
+        <script src="/js/services/api.js"></script>
+        <!-- Components (must load before app.js) -->
+        <script src="/js/components/SearchTab.js"></script>
+        <script src="/js/components/ResultsTab.js"></script>
+        <script src="/js/components/BooksTab.js"></script>
+        <script src="/js/components/ChaptersTab.js"></script>
+        <script src="/js/components/ChunksTab.js"></script>
+        <script src="/js/components/UploadTab.js"></script>
+        <script src="/js/components/BotStatusTab.js"></script>
+        <script src="/js/components/BookMetadataModal.js"></script>
+        <script src="/js/components/ProgressModal.js"></script>
+        <!-- App JS (must load last) -->
+        <script src="/js/app.js"></script>
+    </body>
+</html>
+

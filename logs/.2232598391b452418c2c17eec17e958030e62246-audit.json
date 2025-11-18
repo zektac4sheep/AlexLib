@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/zekta/git/AlexLib/logs/.2232598391b452418c2c17eec17e958030e62246-audit.json",
+    "files": [
+        {
+            "date": 1763446781169,
+            "name": "/Users/zekta/git/AlexLib/logs/error-2025-11-18.log",
+            "hash": "a8c0b3e467e7930e713999e1732b5dc868e3772693a051f17c30651098e3f9c7"
+        }
+    ],
+    "hashType": "sha256"
+}

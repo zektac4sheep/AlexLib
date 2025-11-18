@@ -15,6 +15,7 @@ class Chapter {
             line_start,
             line_end,
             status = "pending",
+            job_id,
         } = chapterData;
 
         return new Promise((resolve, reject) => {
@@ -22,9 +23,9 @@ class Chapter {
         INSERT INTO chapters (
           book_id, chapter_number, chapter_title, chapter_title_simplified, chapter_name,
           cool18_url, cool18_thread_id, content, line_start, line_end,
-          status, downloaded_at
+          status, job_id, downloaded_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `;
             db.run(
                 sql,
@@ -40,6 +41,7 @@ class Chapter {
                     line_start,
                     line_end,
                     status,
+                    job_id || null,
                 ],
                 function (err) {
                     if (err) {
@@ -262,6 +264,40 @@ class Chapter {
         });
     }
 
+    static async findByJobId(jobId) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.all(
+                "SELECT * FROM chapters WHERE job_id = ? ORDER BY chapter_number ASC",
+                [jobId],
+                (err, rows) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(rows);
+                    }
+                }
+            );
+        });
+    }
+
+    static async findFailedByJobId(jobId) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.all(
+                "SELECT * FROM chapters WHERE job_id = ? AND status = 'failed'",
+                [jobId],
+                (err, rows) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(rows);
+                    }
+                }
+            );
+        });
+    }
+
     static async findFailedByBookId(bookId) {
         const db = getDatabase();
         return new Promise((resolve, reject) => {
@@ -274,6 +310,40 @@ class Chapter {
                     } else {
                         resolve(rows);
                     }
+                }
+            );
+        });
+    }
+
+    /**
+     * Find the next available chapter number for a book
+     * @param {number} bookId - Book ID
+     * @param {number} startFrom - Start searching from this number (default: 1)
+     * @returns {Promise<number>} - Next available chapter number
+     */
+    static async findNextAvailableChapterNumber(bookId, startFrom = 1) {
+        const db = getDatabase();
+        return new Promise((resolve, reject) => {
+            db.all(
+                "SELECT chapter_number FROM chapters WHERE book_id = ? AND chapter_number IS NOT NULL ORDER BY chapter_number ASC",
+                [bookId],
+                (err, rows) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+
+                    const existingNumbers = new Set(
+                        rows.map((r) => r.chapter_number)
+                    );
+
+                    // Find first available number starting from startFrom
+                    let nextNumber = startFrom;
+                    while (existingNumbers.has(nextNumber)) {
+                        nextNumber++;
+                    }
+
+                    resolve(nextNumber);
                 }
             );
         });
