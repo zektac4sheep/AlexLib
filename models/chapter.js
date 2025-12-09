@@ -263,6 +263,10 @@ class Chapter {
         const fields = [];
         const values = [];
 
+        if (updates.book_id !== undefined) {
+            fields.push("book_id = ?");
+            values.push(updates.book_id);
+        }
         if (updates.chapter_number !== undefined) {
             fields.push("chapter_number = ?");
             values.push(updates.chapter_number);

@@ -524,6 +524,17 @@ function formatChapterContent(
         logPhase("1. Initial content (after trim)", formatted, isDetailedLog);
     }
 
+    // Normalize curly quotes to straight quotes for conversation detection
+    // Replace " (U+201C LEFT DOUBLE QUOTATION MARK) and " (U+201D RIGHT DOUBLE QUOTATION MARK) with " (U+0022)
+    formatted = formatted.replace(/\u201C|\u201D/g, '"');
+    if (detailedLog_each_phase[1]) {
+        logPhase(
+            "1.5. After curly quote normalization",
+            formatted,
+            isDetailedLog
+        );
+    }
+
     // Clean text: remove cool18 and empty full stops
     formatted = cleanText(formatted);
     if (detailedLog_each_phase[2]) {
@@ -849,6 +860,8 @@ function formatChapterContent(
     if (convertToTraditional && formatted) {
         try {
             formatted = converter.toTraditional(formatted);
+            // Normalize curly quotes to straight quotes after conversion (in case converter introduces them)
+            formatted = formatted.replace(/\u201C|\u201D/g, '"');
         } catch (error) {
             // If conversion fails, log but continue with original text
             logger.error("Error converting to Traditional Chinese", {

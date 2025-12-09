@@ -89,6 +89,52 @@ Vue.component("chapters-tab", {
                 </div>
             </div>
 
+            <!-- Direct URL Input Area -->
+            <div class="card mb-4" v-if="selectedBookId">
+                <div class="card-header" style="cursor: pointer;" @click="showUrlInput = !showUrlInput">
+                    <h5 class="mb-0 d-flex justify-content-between align-items-center">
+                        <span>直接輸入章節連結</span>
+                        <span>{{ showUrlInput ? '▼' : '▶' }}</span>
+                    </h5>
+                </div>
+                <div class="card-body" v-show="showUrlInput">
+                    <div class="mb-3">
+                        <label class="form-label">章節連結（可一次貼上多個）</label>
+                        <textarea
+                            class="form-control"
+                            v-model="urlInput"
+                            rows="4"
+                            placeholder="請輸入 Cool18 章節連結，每行一個或以逗號分隔"
+                        ></textarea>
+                        <small class="form-text text-muted">
+                            送出後會自動建立下載任務，將章節內容加入目前書籍
+                        </small>
+                    </div>
+                    <div class="d-flex justify-content-end gap-2">
+                        <button 
+                            class="btn btn-secondary" 
+                            @click="clearUrlInput"
+                            :disabled="!urlInput || processingUrl"
+                        >
+                            清除
+                        </button>
+                        <button 
+                            class="btn btn-primary" 
+                            @click="processUrlInput"
+                            :disabled="!urlInput || !selectedBookId || processingUrl"
+                        >
+                            <span v-if="processingUrl" class="spinner-border spinner-border-sm me-2"></span>
+                            匯入連結章節
+                        </button>
+                    </div>
+                    <div v-if="urlProcessingStatus" class="mt-3">
+                        <div :class="['alert', urlProcessingStatusType === 'error' ? 'alert-danger mb-0' : 'alert-success mb-0']">
+                            {{ urlProcessingStatus }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- File Upload Area -->
             <div class="card mb-4" v-if="selectedBookId">
                 <div class="card-body">
@@ -441,6 +487,11 @@ Vue.component("chapters-tab", {
             textContent: "",
             processingText: false,
             textProcessingStatus: "",
+            showUrlInput: false,
+            urlInput: "",
+            processingUrl: false,
+            urlProcessingStatus: "",
+            urlProcessingStatusType: "",
         };
     },
     computed: {
@@ -490,6 +541,8 @@ Vue.component("chapters-tab", {
                 this.resetUploadArea();
                 this.clearTextContent();
                 this.showTextInput = false;
+                this.clearUrlInput();
+                this.showUrlInput = false;
             }
         },
     },
@@ -1066,6 +1119,11 @@ Vue.component("chapters-tab", {
             this.textContent = "";
             this.textProcessingStatus = "";
         },
+        clearUrlInput() {
+            this.urlInput = "";
+            this.urlProcessingStatus = "";
+            this.urlProcessingStatusType = "";
+        },
         async processTextContent() {
             if (!this.selectedBookId) {
                 alert("請先選擇書籍");
@@ -1121,6 +1179,58 @@ Vue.component("chapters-tab", {
                 this.textProcessingStatus = "處理失敗: " + (error.message || "Unknown error");
             } finally {
                 this.processingText = false;
+            }
+        },
+        async processUrlInput() {
+            if (!this.selectedBookId) {
+                alert("請先選擇書籍");
+                return;
+            }
+
+            const urls = this.urlInput
+                .split(/[\n,]+/)
+                .map((url) => url.trim())
+                .filter((url) => url.length > 0);
+
+            if (urls.length === 0) {
+                alert("請輸入至少一個連結");
+                return;
+            }
+
+            this.processingUrl = true;
+            this.urlProcessingStatus = "";
+            this.urlProcessingStatusType = "";
+
+            try {
+                const chapters = urls.map((url) => ({
+                    url,
+                    title: "",
+                    chapterNumber: null,
+                }));
+
+                const result = await window.API.addChaptersByUrl(
+                    this.selectedBookId,
+                    chapters
+                );
+
+                const jobInfo = result && result.jobId ? ` (任務 #${result.jobId})` : "";
+                this.urlProcessingStatus = `已建立下載任務${jobInfo}：共 ${urls.length} 個連結，請在作業列表查看進度。`;
+                this.urlProcessingStatusType = "success";
+
+                setTimeout(() => {
+                    this.clearUrlInput();
+                }, 3000);
+
+                setTimeout(() => {
+                    this.loadChapters();
+                }, 1000);
+            } catch (error) {
+                console.error("Error processing URL input:", error);
+                this.urlProcessingStatus =
+                    "新增連結章節失敗: " + (error.message || "Unknown error");
+                this.urlProcessingStatusType = "error";
+            } finally {
+                this.processingUrl = false;
             }
         },
     },

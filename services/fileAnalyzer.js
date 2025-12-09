@@ -14,6 +14,137 @@ const {
 const { normalizeToHalfWidth } = require("./converter");
 const logger = require("../utils/logger");
 
+const FULL_WIDTH_DIGITS = "０１２３４５６７８９";
+const DIGIT_PATTERN = `[零一二三四五六七八九十百千万两0-9${FULL_WIDTH_DIGITS}]`;
+const BOOKNAME_CHAPTER_PATTERN = new RegExp(
+    `(.+?)[（(](${DIGIT_PATTERN}+|終)[）)](.*)$`
+);
+const SITE_SUFFIX_PATTERNS = [
+    /\s*[-－–—]\s*禁忌[书書]屋.*$/i,
+    /\s*[-－–—]\s*禁忌[书書]坊.*$/i,
+];
+
+function stripSiteSuffix(title) {
+    if (!title) return "";
+    let result = title;
+    for (const pattern of SITE_SUFFIX_PATTERNS) {
+        result = result.replace(pattern, "");
+    }
+    return result.trim();
+}
+
+/**
+ * Parse metadata from thread title/main-title text
+ * @param {string} rawTitle
+ * @returns {Object|null}
+ */
+function parseTitleMetadata(rawTitle) {
+    if (!rawTitle || typeof rawTitle !== "string") {
+        return null;
+    }
+
+    let title = normalizeToHalfWidth(rawTitle.trim());
+    if (!title) {
+        return null;
+    }
+
+    title = stripSiteSuffix(title);
+    title = title.replace(/\s+/g, " ").trim();
+    if (!title) {
+        return null;
+    }
+
+    const metadata = {
+        rawTitle: title,
+        bookName: null,
+        chapterNumber: null,
+        chapterName: null,
+        isFinal: false,
+        series: "official",
+    };
+
+    const chapterInfo = extractChapterNumber(title);
+    if (chapterInfo) {
+        if (typeof chapterInfo.number === "number") {
+            metadata.chapterNumber = chapterInfo.number;
+        }
+        metadata.series = chapterInfo.series || "official";
+        metadata.isFinal = !!chapterInfo.isFinal;
+    }
+
+    const booknameMatch = title.match(BOOKNAME_CHAPTER_PATTERN);
+    if (booknameMatch) {
+        const candidateBookName = normalizeToHalfWidth(booknameMatch[1].trim());
+        if (candidateBookName) {
+            metadata.bookName = candidateBookName;
+        }
+
+        const candidateChapterName = (booknameMatch[3] || "").trim();
+        if (candidateChapterName) {
+            metadata.chapterName = candidateChapterName;
+        }
+    }
+
+    // If we didn't get bookname/chaptername from parentheses pattern, try extracting from chapter marker
+    if (!metadata.bookName && chapterInfo?.fullMatch) {
+        const matchIndex = title.indexOf(chapterInfo.fullMatch);
+        if (matchIndex > 0) {
+            const before = title.slice(0, matchIndex).trim();
+            if (before) {
+                metadata.bookName = before;
+            }
+            const after = title
+                .slice(matchIndex + chapterInfo.fullMatch.length)
+                .trim();
+            if (after && !metadata.chapterName) {
+                metadata.chapterName = after;
+            }
+        }
+    }
+
+    // Also try pattern: bookname 第一章 chaptername (without parentheses)
+    if (!metadata.bookName || !metadata.chapterName) {
+        // Pattern: (bookname) 第X章 (chaptername)
+        const chapterMarkerPattern = new RegExp(
+            `第(${DIGIT_PATTERN}+)(章|回|集|話|篇|部|卷)`
+        );
+        const chapterMatch = title.match(chapterMarkerPattern);
+        if (chapterMatch) {
+            const matchIndex = title.indexOf(chapterMatch[0]);
+            if (matchIndex > 0 && !metadata.bookName) {
+                const before = title.slice(0, matchIndex).trim();
+                if (before) {
+                    metadata.bookName = before;
+                }
+            }
+            if (!metadata.chapterName) {
+                const after = title
+                    .slice(matchIndex + chapterMatch[0].length)
+                    .trim();
+                if (after) {
+                    metadata.chapterName = after;
+                }
+            }
+        }
+    }
+
+    // Return metadata if we have at least a chapter number
+    // Don't return null just because bookname/chaptername are missing
+    if (
+        metadata.chapterNumber !== null &&
+        metadata.chapterNumber !== undefined
+    ) {
+        return metadata;
+    }
+
+    // If no chapter number but we have bookname or chaptername, still return it
+    if (metadata.bookName || metadata.chapterName) {
+        return metadata;
+    }
+
+    return null;
+}
+
 /**
  * Extract book name from filename
  * @param {string} filename - Original filename
@@ -79,7 +210,8 @@ async function readFileContent(filePath) {
  * @param {string} content - File content
  * @returns {Array<Object>} - Array of chapter objects {number, title, startLine, endLine, content}
  */
-function detectChapters(content) {
+function detectChapters(content, options = {}) {
+    const { firstChapterMetadata = null } = options || {};
     if (!content) return [];
 
     const lines = content.split("\n");
@@ -96,6 +228,10 @@ function detectChapters(content) {
     // Track pending replacement for official series (only one at a time since we process sequentially)
     let activePendingReplacement = null; // {key, chapter, lines}
 
+    const chapterMarkerPattern = new RegExp(
+        `第(${DIGIT_PATTERN}+)(章|回|集|話|篇|部|卷)`
+    );
+
     // Simple pattern: （1） （2） etc. - used for chapter detection
     // Also matches patterns like "（黑暗 4）" where there's text before the number
     // Allow matching anywhere in the line, not just at start
@@ -105,11 +241,7 @@ function detectChapters(content) {
     // Pattern 1: bookname (chapterNo.) [chapterName] - e.g., "我們的風箏線（3）騙子" or "妻的風箏線（２）" or "妻的風箏線（終）宴"
     // Include full-width digits: ０１２３４５６７８９
     // Allow matching anywhere in the line, not just at start
-    const fullWidthDigits = "０１２３４５６７８９";
-    const digitPattern = `[零一二三四五六七八九十百千万两0-9${fullWidthDigits}]`;
-    const booknameChapterPattern = new RegExp(
-        `(.+?)[（(](${digitPattern}+|終)[）)](.*)$`
-    );
+    const booknameChapterPattern = BOOKNAME_CHAPTER_PATTERN;
 
     // Helper function to find next available chapter number in a series
     function findNextAvailableNumber(series, startNumber) {
@@ -131,26 +263,41 @@ function detectChapters(content) {
         let isChapterHeader = false;
         let detectedChapterNum = null;
         const simpleMatch = line.match(simplePattern);
-        if (simpleMatch) {
-            const chapterNum = parseInt(simpleMatch[1], 10);
+        const chapterMarkerMatch = line.match(chapterMarkerPattern);
+        if (simpleMatch || chapterMarkerMatch) {
+            let chapterNum = 0;
+            if (simpleMatch) {
+                chapterNum = parseInt(simpleMatch[1], 10);
+            } else if (chapterMarkerMatch) {
+                chapterNum = parseInt(chapterMarkerMatch[1], 10);
+            }
             if (!isNaN(chapterNum) && chapterNum > 0) {
                 detectedChapterNum = chapterNum;
                 isChapterHeader = true;
+
                 // Debug: log when we detect a potential chapter header
                 logger.info("Simple pattern detected chapter header", {
                     line: trimmedLine.substring(0, 100),
                     lineNumber: lineNumber + 1,
                     detectedChapterNum,
-                    simpleMatch: simpleMatch[0],
-                    fullLine: line
+                    Matched: simpleMatch
+                        ? simpleMatch[0]
+                        : chapterMarkerMatch[0],
+                    fullLine: line,
                 });
             }
         } else if (trimmedLine.includes("（") && trimmedLine.includes("）")) {
             // Log lines with parentheses that didn't match simple pattern
             logger.info("Line with parentheses but no simple pattern match", {
                 line: trimmedLine.substring(0, 100),
-                lineNumber: lineNumber + 1
+                lineNumber: lineNumber + 1,
             });
+
+            // if we found this, this is not a chapter header
+            isChapterHeader = false;
+            //we will consider it is still part of the last chapter
+            currentChapterLines.push(line);
+            continue;
         }
 
         // Step 2: If chapter detected, use old pattern to extract bookname/author info
@@ -163,14 +310,14 @@ function detectChapters(content) {
             logger.info("Processing chapter header", {
                 line: trimmedLine.substring(0, 100),
                 lineNumber: lineNumber + 1,
-                detectedChapterNum
+                detectedChapterNum,
             });
             // Try to extract bookname and chapter info using old pattern
             booknameMatch = line.match(booknameChapterPattern);
             logger.info("booknameMatch result", {
                 line: trimmedLine.substring(0, 100),
                 hasMatch: !!booknameMatch,
-                match: booknameMatch ? booknameMatch[0] : null
+                match: booknameMatch ? booknameMatch[0] : null,
             });
             if (booknameMatch) {
                 extractedBookName = normalizeToHalfWidth(
@@ -188,32 +335,44 @@ function detectChapters(content) {
                     const fullParenthesesMatch = line.match(/[（(].*?[）)]/);
                     if (fullParenthesesMatch) {
                         // Pass the full parentheses content including series name
-                        chapterInfo = extractChapterNumber(fullParenthesesMatch[0]);
+                        chapterInfo = extractChapterNumber(
+                            fullParenthesesMatch[0]
+                        );
                     } else {
                         // Fallback to just the number if no parentheses found
-                        chapterInfo = extractChapterNumber(`（${chapterNumStr}）`);
+                        chapterInfo = extractChapterNumber(
+                            `（${chapterNumStr}）`
+                        );
                     }
                 }
             } else {
                 // No booknameMatch - this happens when line is just "（黑暗 4）" or similar
                 // Try to extract directly from the line to get series info
-                logger.info("No booknameMatch, trying extractChapterNumber on full line", {
-                    line: trimmedLine.substring(0, 100),
-                    lineNumber: lineNumber + 1
-                });
+                logger.info(
+                    "No booknameMatch, trying extractChapterNumber on full line",
+                    {
+                        line: trimmedLine.substring(0, 100),
+                        lineNumber: lineNumber + 1,
+                    }
+                );
                 chapterInfo = extractChapterNumber(line);
                 logger.info("extractChapterNumber result", {
                     line: trimmedLine.substring(0, 100),
-                    chapterInfo: chapterInfo ? {
-                        number: chapterInfo.number,
-                        series: chapterInfo.series,
-                        format: chapterInfo.format,
-                        isFinal: chapterInfo.isFinal
-                    } : null
+                    chapterInfo: chapterInfo
+                        ? {
+                              number: chapterInfo.number,
+                              series: chapterInfo.series,
+                              format: chapterInfo.format,
+                              isFinal: chapterInfo.isFinal,
+                          }
+                        : null,
                 });
-                
+
                 // If that didn't work, try other patterns
-                if (!chapterInfo || (chapterInfo.number <= 0 && !chapterInfo.isFinal)) {
+                if (
+                    !chapterInfo ||
+                    (chapterInfo.number <= 0 && !chapterInfo.isFinal)
+                ) {
                     const chapterPatterns = [
                         /第[零一二三四五六七八九十百千万两0-9]+(?:章|回|集|話|篇|部|卷)/,
                         /[（(【〔〖〝「『][零一二三四五六七八九十百千万两0-9]+[）)】〕〗〞」』](?=\s*(?:章|回|集|話|篇|部|卷|$|\s|：|:))/,
@@ -259,7 +418,7 @@ function detectChapters(content) {
             let chapterKey = chapterInfo.isFinal
                 ? `${series}:終`
                 : `${series}:${chapterNumber}`;
-            
+
             // Debug logging for chapter detection
             logger.info("Chapter detected and processed", {
                 line: trimmedLine.substring(0, 100), // First 100 chars
@@ -269,11 +428,11 @@ function detectChapters(content) {
                     number: chapterNumber,
                     series: series,
                     format: chapterInfo.format,
-                    isFinal: chapterInfo.isFinal
+                    isFinal: chapterInfo.isFinal,
                 },
                 chapterKey,
                 hasBooknameMatch: !!booknameMatch,
-                extractedBookName: extractedBookName || null
+                extractedBookName: extractedBookName || null,
             });
 
             // Handle clashes
@@ -527,6 +686,30 @@ function detectChapters(content) {
     // Keep "終" chapters as -1 (do not convert to max chapter number + 1)
     // Final chapters will remain with number: -1 and isFinal: true
 
+    if (firstChapterMetadata && chapters.length > 0) {
+        const first = chapters[0];
+        if (firstChapterMetadata.bookName) {
+            first.extractedBookName = firstChapterMetadata.bookName;
+        }
+        if (
+            typeof firstChapterMetadata.chapterNumber === "number" &&
+            firstChapterMetadata.chapterNumber !== 0 &&
+            firstChapterMetadata.chapterNumber !== null &&
+            firstChapterMetadata.chapterNumber !== undefined
+        ) {
+            first.number = firstChapterMetadata.chapterNumber;
+        }
+        if (firstChapterMetadata.chapterName && !first.name) {
+            first.name = firstChapterMetadata.chapterName;
+        }
+        if (firstChapterMetadata.series) {
+            first.series = firstChapterMetadata.series;
+        }
+        if (firstChapterMetadata.isFinal) {
+            first.isFinal = true;
+        }
+    }
+
     return chapters;
 }
 
@@ -665,6 +848,7 @@ function extractMetadata(content) {
 module.exports = {
     analyzeFile,
     detectChapters,
+    parseTitleMetadata,
     extractBookNameFromFilename,
     extractMetadata,
 };

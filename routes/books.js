@@ -1501,6 +1501,7 @@ router.post("/merge-books-with-plus", async (req, res) => {
                 let mergedCount = 0;
                 let updatedCount = 0;
                 let skippedCount = 0;
+                let deletedCount = 0;
 
                 // Merge chapters
                 for (const plusChapter of plusChapters) {
@@ -1567,17 +1568,81 @@ router.post("/merge-books-with-plus", async (req, res) => {
                                 }
                             );
                             updatedCount++;
+                            // Delete the plus chapter since we've merged its content into the target
+                            await Chapter.delete(plusChapter.id);
+                            deletedCount++;
+                            logger.info(
+                                "Updated target chapter with plus content and deleted plus chapter",
+                                {
+                                    chapterNumber: plusChapter.chapter_number,
+                                    series: plusSeries,
+                                    targetChapterId: existingChapter.id,
+                                    plusChapterId: plusChapter.id,
+                                    plusContentLength: plusContentLength,
+                                    existingContentLength:
+                                        existingContentLength,
+                                }
+                            );
                         } else {
-                            skippedCount++;
+                            // Target version is longer - delete the plus chapter
+                            // The target chapter already has the better content
+                            await Chapter.delete(plusChapter.id);
+                            deletedCount++;
+                            logger.info(
+                                "Target chapter has longer content, deleted plus chapter",
+                                {
+                                    chapterNumber: plusChapter.chapter_number,
+                                    series: plusSeries,
+                                    targetChapterId: existingChapter.id,
+                                    plusChapterId: plusChapter.id,
+                                    plusContentLength: plusContentLength,
+                                    existingContentLength:
+                                        existingContentLength,
+                                }
+                            );
                         }
                     } else {
                         // New chapter - move it to target book (preserve series)
                         const chapterSeries = plusChapter.series || "official";
-                        await Chapter.updateById(plusChapter.id, {
-                            book_id: targetBook.id,
-                            series: chapterSeries,
-                        });
-                        mergedCount++;
+                        try {
+                            await Chapter.updateById(plusChapter.id, {
+                                book_id: targetBook.id,
+                                series: chapterSeries,
+                            });
+                            mergedCount++;
+                            logger.info("Moved chapter to target book", {
+                                chapterId: plusChapter.id,
+                                chapterNumber: plusChapter.chapter_number,
+                                series: chapterSeries,
+                                fromBookId: plusBook.id,
+                                toBookId: targetBook.id,
+                            });
+                        } catch (moveError) {
+                            // If UNIQUE constraint violation, chapter already exists in target
+                            // This shouldn't happen since we checked, but handle it gracefully
+                            if (
+                                moveError.message &&
+                                moveError.message.includes("UNIQUE constraint")
+                            ) {
+                                logger.warn(
+                                    "Cannot move chapter - duplicate in target book, deleting instead",
+                                    {
+                                        chapterId: plusChapter.id,
+                                        chapterNumber:
+                                            plusChapter.chapter_number,
+                                        series: chapterSeries,
+                                        fromBookId: plusBook.id,
+                                        toBookId: targetBook.id,
+                                        error: moveError.message,
+                                    }
+                                );
+                                // Delete the plus chapter since target already has it
+                                await Chapter.delete(plusChapter.id);
+                                deletedCount++;
+                            } else {
+                                throw moveError;
+                            }
+                        }
                     }
                 }
 
@@ -1600,6 +1665,7 @@ router.post("/merge-books-with-plus", async (req, res) => {
                     status: "merged",
                     chaptersMerged: mergedCount,
                     chaptersUpdated: updatedCount,
+                    chaptersDeleted: deletedCount,
                     chaptersSkipped: skippedCount,
                 });
 
@@ -1733,7 +1799,10 @@ router.post("/add-chapters-file", async (req, res) => {
         const path = require("path");
         const fs = require("fs");
         const { analyzeFile } = require("../services/fileAnalyzer");
-        const { toTraditional, normalizeToHalfWidth } = require("../services/converter");
+        const {
+            toTraditional,
+            normalizeToHalfWidth,
+        } = require("../services/converter");
         const { sortChaptersForExport } = require("../services/chunker");
         const botStatusService = require("../services/botStatusService");
         const Chapter = require("../models/chapter");
@@ -1796,35 +1865,49 @@ router.post("/add-chapters-file", async (req, res) => {
                 botStatusService.registerOperation("upload", uploadId, {
                     filename: req.file.originalname,
                     bookId: bookId,
-                    bookName: book.book_name_simplified || book.book_name_traditional,
+                    bookName:
+                        book.book_name_simplified || book.book_name_traditional,
                     totalChapters: 0,
                     completedChapters: 0,
                     failedChapters: 0,
                 });
 
                 // Analyze the file
-                const analysis = await analyzeFile(req.file.path, req.file.originalname);
+                const analysis = await analyzeFile(
+                    req.file.path,
+                    req.file.originalname
+                );
 
                 // Log parsed chapters with numbers and series
                 if (analysis.chapters && analysis.chapters.length > 0) {
-                    logger.info("Parsed chapters from file (add-chapters-file)", {
-                        filename: req.file.originalname,
-                        bookId: bookId,
-                        totalChapters: analysis.totalChapters,
-                        chapters: analysis.chapters.map(ch => ({
-                            number: ch.number,
-                            series: ch.series || 'official',
-                            title: ch.title || ch.titleSimplified || ''
-                        }))
-                    });
-                    analysis.chapters.forEach(ch => {
-                        logger.info(`Chapter ${ch.number} - Series: ${ch.series || 'official'}`);
+                    logger.info(
+                        "Parsed chapters from file (add-chapters-file)",
+                        {
+                            filename: req.file.originalname,
+                            bookId: bookId,
+                            totalChapters: analysis.totalChapters,
+                            chapters: analysis.chapters.map((ch) => ({
+                                number: ch.number,
+                                series: ch.series || "official",
+                                title: ch.title || ch.titleSimplified || "",
+                            })),
+                        }
+                    );
+                    analysis.chapters.forEach((ch) => {
+                        logger.info(
+                            `Chapter ${ch.number} - Series: ${
+                                ch.series || "official"
+                            }`
+                        );
                     });
                 } else {
-                    logger.info("No chapters found in parsed file (add-chapters-file)", {
-                        filename: req.file.originalname,
-                        bookId: bookId
-                    });
+                    logger.info(
+                        "No chapters found in parsed file (add-chapters-file)",
+                        {
+                            filename: req.file.originalname,
+                            bookId: bookId,
+                        }
+                    );
                 }
 
                 // Update operation with total chapters
@@ -1843,16 +1926,20 @@ router.post("/add-chapters-file", async (req, res) => {
                 for (let i = 0; i < sortedChapters.length; i++) {
                     const chapter = sortedChapters[i];
                     try {
-                        const chapterTitleTraditional = toTraditional(chapter.title);
-                        const chapterTitle = chapter.titleSimplified || chapter.title;
+                        const chapterTitleTraditional = toTraditional(
+                            chapter.title
+                        );
+                        const chapterTitle =
+                            chapter.titleSimplified || chapter.title;
 
                         // Format chapter content using reformatChapterContent
-                        const formattedContent = textProcessor.reformatChapterContent(
-                            chapter.content || "",
-                            chapterTitle,
-                            true, // Convert to Traditional Chinese
-                            true // Enable detailed logging
-                        );
+                        const formattedContent =
+                            textProcessor.reformatChapterContent(
+                                chapter.content || "",
+                                chapterTitle,
+                                true, // Convert to Traditional Chinese
+                                true // Enable detailed logging
+                            );
 
                         const series = chapter.series || "official";
                         const chapterData = {
@@ -1870,11 +1957,12 @@ router.post("/add-chapters-file", async (req, res) => {
                         };
 
                         // Check if chapter already exists
-                        const existingChapter = await Chapter.findByBookAndNumber(
-                            bookId,
-                            chapter.number,
-                            series
-                        );
+                        const existingChapter =
+                            await Chapter.findByBookAndNumber(
+                                bookId,
+                                chapter.number,
+                                series
+                            );
 
                         if (existingChapter) {
                             // Update existing chapter
@@ -1925,16 +2013,19 @@ router.post("/add-chapters-file", async (req, res) => {
                 res.json({
                     message: "File processed successfully",
                     bookId,
-                    bookName: book.book_name_simplified || book.book_name_traditional,
+                    bookName:
+                        book.book_name_simplified || book.book_name_traditional,
                     chaptersInserted: insertedCount,
                     chaptersUpdated: updatedCount,
                     chaptersErrored: errorCount,
                     totalChapters: analysis.totalChapters,
-                    chapters: analysis.chapters ? analysis.chapters.map(ch => ({
-                        number: ch.number,
-                        series: ch.series || 'official',
-                        title: ch.title || ch.titleSimplified || ''
-                    })) : []
+                    chapters: analysis.chapters
+                        ? analysis.chapters.map((ch) => ({
+                              number: ch.number,
+                              series: ch.series || "official",
+                              title: ch.title || ch.titleSimplified || "",
+                          }))
+                        : [],
                 });
             } catch (error) {
                 // Clean up uploaded file on error
@@ -1947,7 +2038,7 @@ router.post("/add-chapters-file", async (req, res) => {
                         message: error.message,
                         stack: error.stack,
                         name: error.name,
-                        ...error
+                        ...error,
                     },
                 });
                 res.status(500).json({

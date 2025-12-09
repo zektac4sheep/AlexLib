@@ -408,6 +408,7 @@ function createChunksFromChapters(
         const chapterContent = chapter.content || "";
         const chapterLines = chapterContent.split("\n");
         const chapterLineCount = chapterLines.length;
+
         const needsSeparator = currentChunkContent.length > 0; // Need separator if chunk already has content
         const separatorLineCount = needsSeparator ? 1 : 0; // One empty line separator
         const totalLinesForChapter = chapterLineCount + separatorLineCount;
@@ -499,7 +500,13 @@ function createChunksFromChapters(
             );
 
             // Convert chunk content to Traditional Chinese
-            const traditionalContent = converter.toTraditional(chunkWithTOC);
+            let traditionalContent = converter.toTraditional(chunkWithTOC);
+
+            // Normalize curly quotes to straight quotes after conversion (in case converter introduces them)
+            traditionalContent = traditionalContent.replace(
+                /\u201C|\u201D/g,
+                '"'
+            );
 
             chunks.push({
                 content: traditionalContent,
@@ -637,7 +644,10 @@ function createChunksFromChapters(
         );
 
         // Convert chunk content to Traditional Chinese
-        const traditionalContent = converter.toTraditional(chunkWithTOC);
+        let traditionalContent = converter.toTraditional(chunkWithTOC);
+
+        // Normalize curly quotes to straight quotes after conversion (in case converter introduces them)
+        traditionalContent = traditionalContent.replace(/\u201C|\u201D/g, '"');
 
         chunks.push({
             content: traditionalContent,
@@ -1055,6 +1065,10 @@ function addLineBreaksForDenseText(content) {
  */
 function processChunkContent(chunkContent, chaptersInChunk, seenChapters) {
     if (!chunkContent || chaptersInChunk.length === 0) return chunkContent;
+
+    // Normalize curly quotes to straight quotes for conversation detection
+    // Replace " (U+201C LEFT DOUBLE QUOTATION MARK) and " (U+201D RIGHT DOUBLE QUOTATION MARK) with " (U+0022)
+    chunkContent = chunkContent.replace(/\u201C|\u201D/g, '"');
 
     const lines = chunkContent.split("\n");
     const processedLines = [];

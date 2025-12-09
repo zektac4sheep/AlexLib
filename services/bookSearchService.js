@@ -11,6 +11,7 @@ const { sortChaptersForExport } = require("./chunker");
 const botStatusService = require("./botStatusService");
 const logger = require("../utils/logger");
 const bookSearchLogger = require("../utils/logger").bookSearchLogger;
+const fileAnalyzer = require("./fileAnalyzer");
 
 // Track if queue processor is running
 let isProcessing = false;
@@ -95,11 +96,24 @@ async function processNextJob() {
                 // Build thread response similar to search route
                 const processedThreads = await Promise.all(
                     threads.map(async (thread) => {
-                        const chapterInfo =
-                            chapterExtractor.extractChapterNumber(thread.title);
-                        const bookNameSimplified = bookDetector.detectBookName(
+                        const titleMetadata = fileAnalyzer.parseTitleMetadata(
                             thread.title
                         );
+                        const chapterInfo =
+                            chapterExtractor.extractChapterNumber(thread.title);
+                        const resolvedChapterNumber =
+                            titleMetadata?.chapterNumber ??
+                            (chapterInfo ? chapterInfo.number : null);
+                        const resolvedChapterFormat = chapterInfo
+                            ? chapterInfo.format
+                            : null;
+                        let bookNameSimplified =
+                            titleMetadata?.bookName ||
+                            bookDetector.detectBookName(thread.title);
+                        if (bookNameSimplified) {
+                            bookNameSimplified =
+                                normalizeToHalfWidth(bookNameSimplified);
+                        }
                         const titleTraditional = converter.toTraditional(
                             thread.title
                         );
@@ -116,12 +130,8 @@ async function processNextJob() {
                             threadId: thread.threadId,
                             title: thread.title,
                             titleTraditional,
-                            chapterNumber: chapterInfo
-                                ? chapterInfo.number
-                                : null,
-                            chapterFormat: chapterInfo
-                                ? chapterInfo.format
-                                : null,
+                            chapterNumber: resolvedChapterNumber,
+                            chapterFormat: resolvedChapterFormat,
                             bookNameSimplified,
                             bookNameTraditional: bookNameSimplified
                                 ? converter.toTraditional(bookNameSimplified)
@@ -228,23 +238,29 @@ async function processBookSearch(job) {
     if (!searchKeyword) {
         throw new Error("Book name is required for search");
     }
-    
+
     // Convert to simplified Chinese before searching (without overwriting the original)
     // This ensures better search results on Cool18 which uses simplified Chinese
     try {
         const convertedKeyword = converter.toSimplified(searchKeyword);
         if (convertedKeyword && convertedKeyword.trim()) {
             searchKeyword = convertedKeyword;
-            bookSearchLogger.info("Converted book name to simplified Chinese for search", {
-                original: bookName || book.book_name_simplified,
-                converted: searchKeyword,
-            });
+            bookSearchLogger.info(
+                "Converted book name to simplified Chinese for search",
+                {
+                    original: bookName || book.book_name_simplified,
+                    converted: searchKeyword,
+                }
+            );
         }
     } catch (error) {
-        bookSearchLogger.warn("Failed to convert book name to simplified Chinese, using original", {
-            error: error?.message,
-            keyword: searchKeyword,
-        });
+        bookSearchLogger.warn(
+            "Failed to convert book name to simplified Chinese, using original",
+            {
+                error: error?.message,
+                keyword: searchKeyword,
+            }
+        );
         // Continue with original keyword if conversion fails
     }
 
@@ -259,23 +275,28 @@ async function processBookSearch(job) {
         .sort((a, b) => a - b);
 
     const existingChapters = new Set(chapterNumbers);
-    
+
     // Calculate min and max for logging purposes
-    const minChapter = chapterNumbers.length > 0 ? Math.min(...chapterNumbers) : null;
-    const maxChapter = chapterNumbers.length > 0 ? Math.max(...chapterNumbers) : null;
-    
+    const minChapter =
+        chapterNumbers.length > 0 ? Math.min(...chapterNumbers) : null;
+    const maxChapter =
+        chapterNumbers.length > 0 ? Math.max(...chapterNumbers) : null;
+
     const pagesToSearch = pages || 3;
 
     // Log search start
-    bookSearchLogger.info("Starting book search - searching for ALL available chapters", {
-        jobId: job.id,
-        bookId: job.book_id,
-        bookName: searchKeyword,
-        pagesToSearch: pagesToSearch,
-        existingChapters: chapterNumbers.length,
-        minChapter: minChapter,
-        maxChapter: maxChapter,
-    });
+    bookSearchLogger.info(
+        "Starting book search - searching for ALL available chapters",
+        {
+            jobId: job.id,
+            bookId: job.book_id,
+            bookName: searchKeyword,
+            pagesToSearch: pagesToSearch,
+            existingChapters: chapterNumbers.length,
+            minChapter: minChapter,
+            maxChapter: maxChapter,
+        }
+    );
 
     // Search for the book on Cool18
     const bookSearchResult = await cool18Scraper.searchForum(
@@ -342,6 +363,9 @@ async function processBookSearch(job) {
         if (normalizedAuthors.length === 0) {
             return true; // No authors to check, allow all
         }
+        return true;
+
+        //@todo temp disable author verification
         const normalizedContent = normalizeToHalfWidth(content.toLowerCase());
         return normalizedAuthors.some((author) =>
             normalizedContent.includes(author)
@@ -351,24 +375,45 @@ async function processBookSearch(job) {
     // Process search results and verify author in content
     // This function is now async because it needs to download content to verify authors
     const processSearchResults = async (results, verificationStats) => {
+        const buildParsingContext = (title) => {
+            const titleMetadata = fileAnalyzer.parseTitleMetadata(title);
+            const chapterInfo = chapterExtractor.extractChapterNumber(title);
+            return {
+                titleMetadata,
+                chapterInfo,
+                chapterNumber:
+                    titleMetadata?.chapterNumber ??
+                    (chapterInfo ? chapterInfo.number : null),
+                chapterFormat: chapterInfo ? chapterInfo.format : null,
+                series:
+                    titleMetadata?.series || chapterInfo?.series || "official",
+                chapterName: titleMetadata?.chapterName || null,
+                bookName:
+                    titleMetadata?.bookName ||
+                    bookDetector.detectBookName(title),
+            };
+        };
         // Track all candidate links and their validation status
         const candidateLinks = [];
 
         // Find single chapters
         for (const thread of results) {
-            const chapterInfo = chapterExtractor.extractChapterNumber(
-                thread.title
-            );
-            
+            const parsingContext = buildParsingContext(thread.title);
+            const chapterInfo = parsingContext.chapterInfo;
+            const resolvedChapterNumber = parsingContext.chapterNumber;
+            const shouldInclude =
+                resolvedChapterNumber !== null
+                    ? shouldIncludeChapter(resolvedChapterNumber)
+                    : false;
+
             // Log all threads being processed
-            const shouldInclude = chapterInfo ? shouldIncludeChapter(chapterInfo.number) : false;
             bookSearchLogger.info("Processing thread from search results", {
                 jobId: job.id,
                 bookId: job.book_id,
                 bookName: searchKeyword,
                 url: thread.url,
                 title: thread.title,
-                extractedChapterNumber: chapterInfo ? chapterInfo.number : null,
+                extractedChapterNumber: resolvedChapterNumber,
                 extractedChapterFormat: chapterInfo ? chapterInfo.format : null,
                 shouldInclude: shouldInclude,
                 maxChapter: maxChapter,
@@ -376,24 +421,24 @@ async function processBookSearch(job) {
                 existingChapters: Array.from(existingChapters),
             });
 
-            if (chapterInfo && shouldInclude) {
+            if (resolvedChapterNumber !== null && shouldInclude) {
                 // Download content to verify author
                 verificationStats.total++;
                 const candidateInfo = {
                     link: thread.url,
                     title: thread.title,
-                    chapterNumber: chapterInfo.number,
+                    chapterNumber: resolvedChapterNumber,
                     type: "single",
                     status: "pending",
                     date: thread.date,
                 };
                 candidateLinks.push(candidateInfo);
-                
+
                 bookSearchLogger.info("Downloading content to verify chapter", {
                     jobId: job.id,
                     bookId: job.book_id,
                     bookName: searchKeyword,
-                    chapterNumber: chapterInfo.number,
+                    chapterNumber: resolvedChapterNumber,
                     url: thread.url,
                     title: thread.title,
                 });
@@ -401,29 +446,38 @@ async function processBookSearch(job) {
                     const threadContent = await cool18Scraper.downloadThread(
                         thread.url
                     );
-                    
-                    // Log content details
-                    const contentLength = threadContent.content ? threadContent.content.length : 0;
-                    const contentPreview = threadContent.content 
-                        ? threadContent.content.substring(0, 200).replace(/\n/g, ' ') 
-                        : '';
-                    
-                    bookSearchLogger.info("Content downloaded for verification", {
-                        jobId: job.id,
-                        bookId: job.book_id,
-                        bookName: searchKeyword,
-                        chapterNumber: chapterInfo.number,
-                        url: thread.url,
-                        title: thread.title,
-                        contentLength: contentLength,
-                        contentPreview: contentPreview,
-                    });
 
-                    const isValid = contentContainsAuthor(threadContent.content);
-                    
+                    // Log content details
+                    const contentLength = threadContent.content
+                        ? threadContent.content.length
+                        : 0;
+                    const contentPreview = threadContent.content
+                        ? threadContent.content
+                              .substring(0, 200)
+                              .replace(/\n/g, " ")
+                        : "";
+
+                    bookSearchLogger.info(
+                        "Content downloaded for verification",
+                        {
+                            jobId: job.id,
+                            bookId: job.book_id,
+                            bookName: searchKeyword,
+                            chapterNumber: resolvedChapterNumber,
+                            url: thread.url,
+                            title: thread.title,
+                            contentLength: contentLength,
+                            contentPreview: contentPreview,
+                        }
+                    );
+
+                    const isValid = contentContainsAuthor(
+                        threadContent.content
+                    );
+
                     if (isValid) {
                         addChapterIfNew({
-                            chapterNumber: chapterInfo.number,
+                            chapterNumber: resolvedChapterNumber,
                             title: thread.title,
                             url: thread.url,
                             date: thread.date,
@@ -431,16 +485,19 @@ async function processBookSearch(job) {
                         verificationStats.verified++;
                         candidateInfo.status = "VALID";
                         candidateInfo.reason = "Author found in content";
-                        bookSearchLogger.info("Chapter verified - VALID CHAPTER (author found in content)", {
-                            jobId: job.id,
-                            bookId: job.book_id,
-                            bookName: searchKeyword,
-                            chapterNumber: chapterInfo.number,
-                            chapterLink: thread.url,
-                            chapterTitle: thread.title,
-                            authorsSearched: normalizedAuthors,
-                            validationResult: "VALID",
-                        });
+                        bookSearchLogger.info(
+                            "Chapter verified - VALID CHAPTER (author found in content)",
+                            {
+                                jobId: job.id,
+                                bookId: job.book_id,
+                                bookName: searchKeyword,
+                                chapterNumber: resolvedChapterNumber,
+                                chapterLink: thread.url,
+                                chapterTitle: thread.title,
+                                authorsSearched: normalizedAuthors,
+                                validationResult: "VALID",
+                            }
+                        );
                     } else {
                         verificationStats.excluded++;
                         candidateInfo.status = "INVALID";
@@ -451,7 +508,7 @@ async function processBookSearch(job) {
                                 jobId: job.id,
                                 bookId: job.book_id,
                                 bookName: searchKeyword,
-                                chapterNumber: chapterInfo.number,
+                                chapterNumber: resolvedChapterNumber,
                                 chapterLink: thread.url,
                                 chapterTitle: thread.title,
                                 authorsSearched: normalizedAuthors,
@@ -463,86 +520,108 @@ async function processBookSearch(job) {
                     verificationStats.failed++;
                     candidateInfo.status = "FAILED";
                     candidateInfo.reason = `Download error: ${error.message}`;
-                    bookSearchLogger.warn("Error downloading thread to verify author", {
-                        jobId: job.id,
-                        bookId: job.book_id,
-                        bookName: searchKeyword,
-                        chapterNumber: chapterInfo.number,
-                        chapterLink: thread.url,
-                        chapterTitle: thread.title,
-                        error: error.message,
-                        validationResult: "FAILED - Download error",
-                    });
+                    bookSearchLogger.warn(
+                        "Error downloading thread to verify author",
+                        {
+                            jobId: job.id,
+                            bookId: job.book_id,
+                            bookName: searchKeyword,
+                            chapterNumber: resolvedChapterNumber,
+                            chapterLink: thread.url,
+                            chapterTitle: thread.title,
+                            error: error.message,
+                            validationResult: "FAILED - Download error",
+                        }
+                    );
                     // If download fails, skip this chapter (better to be safe)
                 }
-            } else if (chapterInfo) {
+            } else if (resolvedChapterNumber !== null) {
                 // Check if chapter already exists
-                if (existingChapters.has(chapterInfo.number)) {
+                if (existingChapters.has(resolvedChapterNumber)) {
                     // Check if existing chapter has < 100 lines - if so, compare with new chapter
                     try {
-                        const existingChapter = await Chapter.findByBookAndNumber(
-                            job.book_id,
-                            chapterInfo.number
-                        );
-                        
+                        const existingChapter =
+                            await Chapter.findByBookAndNumber(
+                                job.book_id,
+                                resolvedChapterNumber
+                            );
+
                         if (existingChapter) {
                             // Calculate existing chapter line count
-                            const existingLines = existingChapter.content 
-                                ? existingChapter.content.split('\n').length 
+                            const existingLines = existingChapter.content
+                                ? existingChapter.content.split("\n").length
                                 : 0;
-                            
-                            bookSearchLogger.info("Chapter already exists - checking if update needed", {
-                                jobId: job.id,
-                                bookId: job.book_id,
-                                bookName: searchKeyword,
-                                chapterNumber: chapterInfo.number,
-                                url: thread.url,
-                                title: thread.title,
-                                existingLines: existingLines,
-                            });
-                            
-                            // If existing chapter has < 100 lines, download new chapter and compare
-                            if (existingLines < 100) {
-                                bookSearchLogger.info("Existing chapter has < 100 lines - downloading new chapter for comparison", {
+
+                            bookSearchLogger.info(
+                                "Chapter already exists - checking if update needed",
+                                {
                                     jobId: job.id,
                                     bookId: job.book_id,
                                     bookName: searchKeyword,
-                                    chapterNumber: chapterInfo.number,
+                                    chapterNumber: resolvedChapterNumber,
                                     url: thread.url,
+                                    title: thread.title,
                                     existingLines: existingLines,
-                                });
-                                
-                                try {
-                                    const threadContent = await cool18Scraper.downloadThread(
-                                        thread.url
-                                    );
-                                    
-                                    // Calculate new chapter line count
-                                    const newLines = threadContent.content 
-                                        ? threadContent.content.split('\n').length 
-                                        : 0;
-                                    const lineDifference = newLines - existingLines;
-                                    
-                                    bookSearchLogger.info("Chapter comparison result", {
+                                }
+                            );
+
+                            // If existing chapter has < 100 lines, download new chapter and compare
+                            if (existingLines < 100) {
+                                bookSearchLogger.info(
+                                    "Existing chapter has < 100 lines - downloading new chapter for comparison",
+                                    {
                                         jobId: job.id,
                                         bookId: job.book_id,
                                         bookName: searchKeyword,
-                                        chapterNumber: chapterInfo.number,
+                                        chapterNumber: resolvedChapterNumber,
                                         url: thread.url,
                                         existingLines: existingLines,
-                                        newLines: newLines,
-                                        lineDifference: lineDifference,
-                                    });
-                                    
+                                    }
+                                );
+
+                                try {
+                                    const threadContent =
+                                        await cool18Scraper.downloadThread(
+                                            thread.url
+                                        );
+
+                                    // Calculate new chapter line count
+                                    const newLines = threadContent.content
+                                        ? threadContent.content.split("\n")
+                                              .length
+                                        : 0;
+                                    const lineDifference =
+                                        newLines - existingLines;
+
+                                    bookSearchLogger.info(
+                                        "Chapter comparison result",
+                                        {
+                                            jobId: job.id,
+                                            bookId: job.book_id,
+                                            bookName: searchKeyword,
+                                            chapterNumber:
+                                                resolvedChapterNumber,
+                                            url: thread.url,
+                                            existingLines: existingLines,
+                                            newLines: newLines,
+                                            lineDifference: lineDifference,
+                                        }
+                                    );
+
                                     // If new chapter has 30+ more lines, include it as candidate
                                     if (lineDifference > 30) {
                                         // Verify author before including
-                                        if (contentContainsAuthor(threadContent.content)) {
+                                        if (
+                                            contentContainsAuthor(
+                                                threadContent.content
+                                            )
+                                        ) {
                                             verificationStats.total++;
                                             const candidateInfo = {
                                                 link: thread.url,
                                                 title: thread.title,
-                                                chapterNumber: chapterInfo.number,
+                                                chapterNumber:
+                                                    resolvedChapterNumber,
                                                 type: "single-update",
                                                 status: "pending",
                                                 date: thread.date,
@@ -551,9 +630,10 @@ async function processBookSearch(job) {
                                                 lineDifference: lineDifference,
                                             };
                                             candidateLinks.push(candidateInfo);
-                                            
+
                                             addChapterIfNew({
-                                                chapterNumber: chapterInfo.number,
+                                                chapterNumber:
+                                                    resolvedChapterNumber,
                                                 title: thread.title,
                                                 url: thread.url,
                                                 date: thread.date,
@@ -562,99 +642,132 @@ async function processBookSearch(job) {
                                             verificationStats.verified++;
                                             candidateInfo.status = "VALID";
                                             candidateInfo.reason = `New chapter has ${lineDifference} more lines (existing: ${existingLines}, new: ${newLines})`;
-                                            
-                                            bookSearchLogger.info("Chapter update candidate - VALID (new chapter has significantly more lines)", {
-                                                jobId: job.id,
-                                                bookId: job.book_id,
-                                                bookName: searchKeyword,
-                                                chapterNumber: chapterInfo.number,
-                                                chapterLink: thread.url,
-                                                chapterTitle: thread.title,
-                                                existingLines: existingLines,
-                                                newLines: newLines,
-                                                lineDifference: lineDifference,
-                                                validationResult: "VALID - Update recommended",
-                                            });
+
+                                            bookSearchLogger.info(
+                                                "Chapter update candidate - VALID (new chapter has significantly more lines)",
+                                                {
+                                                    jobId: job.id,
+                                                    bookId: job.book_id,
+                                                    bookName: searchKeyword,
+                                                    chapterNumber:
+                                                        resolvedChapterNumber,
+                                                    chapterLink: thread.url,
+                                                    chapterTitle: thread.title,
+                                                    existingLines:
+                                                        existingLines,
+                                                    newLines: newLines,
+                                                    lineDifference:
+                                                        lineDifference,
+                                                    validationResult:
+                                                        "VALID - Update recommended",
+                                                }
+                                            );
                                         } else {
-                                            bookSearchLogger.info("Chapter update candidate excluded - author not found in new content", {
+                                            bookSearchLogger.info(
+                                                "Chapter update candidate excluded - author not found in new content",
+                                                {
+                                                    jobId: job.id,
+                                                    bookId: job.book_id,
+                                                    bookName: searchKeyword,
+                                                    chapterNumber:
+                                                        resolvedChapterNumber,
+                                                    url: thread.url,
+                                                    existingLines:
+                                                        existingLines,
+                                                    newLines: newLines,
+                                                    lineDifference:
+                                                        lineDifference,
+                                                }
+                                            );
+                                        }
+                                    } else {
+                                        bookSearchLogger.info(
+                                            "Chapter update not needed - line difference too small",
+                                            {
                                                 jobId: job.id,
                                                 bookId: job.book_id,
                                                 bookName: searchKeyword,
-                                                chapterNumber: chapterInfo.number,
+                                                chapterNumber:
+                                                    resolvedChapterNumber,
                                                 url: thread.url,
                                                 existingLines: existingLines,
                                                 newLines: newLines,
                                                 lineDifference: lineDifference,
-                                            });
-                                        }
-                                    } else {
-                                        bookSearchLogger.info("Chapter update not needed - line difference too small", {
+                                                reason: `Line difference (${lineDifference}) is <= 30 lines`,
+                                            }
+                                        );
+                                    }
+                                } catch (error) {
+                                    bookSearchLogger.warn(
+                                        "Error downloading chapter for comparison",
+                                        {
                                             jobId: job.id,
                                             bookId: job.book_id,
                                             bookName: searchKeyword,
-                                            chapterNumber: chapterInfo.number,
+                                            chapterNumber:
+                                                resolvedChapterNumber,
                                             url: thread.url,
-                                            existingLines: existingLines,
-                                            newLines: newLines,
-                                            lineDifference: lineDifference,
-                                            reason: `Line difference (${lineDifference}) is <= 30 lines`,
-                                        });
-                                    }
-                                } catch (error) {
-                                    bookSearchLogger.warn("Error downloading chapter for comparison", {
+                                            error: error.message,
+                                        }
+                                    );
+                                }
+                            } else {
+                                bookSearchLogger.info(
+                                    "Thread skipped - chapter already exists with sufficient content",
+                                    {
                                         jobId: job.id,
                                         bookId: job.book_id,
                                         bookName: searchKeyword,
-                                        chapterNumber: chapterInfo.number,
+                                        chapterNumber: resolvedChapterNumber,
                                         url: thread.url,
-                                        error: error.message,
-                                    });
-                                }
-                            } else {
-                                bookSearchLogger.info("Thread skipped - chapter already exists with sufficient content", {
-                                    jobId: job.id,
-                                    bookId: job.book_id,
-                                    bookName: searchKeyword,
-                                    chapterNumber: chapterInfo.number,
-                                    url: thread.url,
-                                    title: thread.title,
-                                    existingLines: existingLines,
-                                    reason: "Existing chapter has >= 100 lines",
-                                });
+                                        title: thread.title,
+                                        existingLines: existingLines,
+                                        reason: "Existing chapter has >= 100 lines",
+                                    }
+                                );
                             }
                         }
                     } catch (error) {
-                        bookSearchLogger.warn("Error checking existing chapter", {
-                            jobId: job.id,
-                            bookId: job.book_id,
-                            bookName: searchKeyword,
-                            chapterNumber: chapterInfo.number,
-                            url: thread.url,
-                            error: error.message,
-                        });
+                        bookSearchLogger.warn(
+                            "Error checking existing chapter",
+                            {
+                                jobId: job.id,
+                                bookId: job.book_id,
+                                bookName: searchKeyword,
+                                chapterNumber: resolvedChapterNumber,
+                                url: thread.url,
+                                error: error.message,
+                            }
+                        );
                     }
                 } else {
                     // This shouldn't happen with new logic
-                    bookSearchLogger.info("Thread skipped - unexpected filter", {
-                        jobId: job.id,
-                        bookId: job.book_id,
-                        bookName: searchKeyword,
-                        chapterNumber: chapterInfo.number,
-                        url: thread.url,
-                        title: thread.title,
-                        reason: "Unexpected: Chapter should be included but was filtered out",
-                    });
+                    bookSearchLogger.info(
+                        "Thread skipped - unexpected filter",
+                        {
+                            jobId: job.id,
+                            bookId: job.book_id,
+                            bookName: searchKeyword,
+                            chapterNumber: resolvedChapterNumber,
+                            url: thread.url,
+                            title: thread.title,
+                            reason: "Unexpected: Chapter should be included but was filtered out",
+                        }
+                    );
                 }
             } else {
                 // Log threads where no chapter number could be extracted
-                bookSearchLogger.info("Thread skipped - no chapter number extracted", {
-                    jobId: job.id,
-                    bookId: job.book_id,
-                    bookName: searchKeyword,
-                    url: thread.url,
-                    title: thread.title,
-                    reason: "ChapterExtractor could not extract chapter number from title",
-                });
+                bookSearchLogger.info(
+                    "Thread skipped - no chapter number extracted",
+                    {
+                        jobId: job.id,
+                        bookId: job.book_id,
+                        bookName: searchKeyword,
+                        url: thread.url,
+                        title: thread.title,
+                        reason: "ChapterExtractor could not extract chapter number from title",
+                    }
+                );
             }
         }
 
@@ -677,43 +790,56 @@ async function processBookSearch(job) {
                     const candidateInfo = {
                         link: thread.url,
                         title: thread.title,
-                        chapterNumbers: Array.from({ length: end - start + 1 }, (_, i) => start + i),
+                        chapterNumbers: Array.from(
+                            { length: end - start + 1 },
+                            (_, i) => start + i
+                        ),
                         range: `${start}-${end}`,
                         type: "multi-chapter-range",
                         status: "pending",
                         date: thread.date,
                     };
                     candidateLinks.push(candidateInfo);
-                    
-                    bookSearchLogger.info("Downloading content to verify multi-chapter range", {
-                        jobId: job.id,
-                        bookId: job.book_id,
-                        bookName: searchKeyword,
-                        url: thread.url,
-                        title: thread.title,
-                        range: `${start}-${end}`,
-                    });
-                    try {
-                        const threadContent =
-                            await cool18Scraper.downloadThread(thread.url);
-                        
-                        // Log content details
-                        const contentLength = threadContent.content ? threadContent.content.length : 0;
-                        const contentPreview = threadContent.content 
-                            ? threadContent.content.substring(0, 200).replace(/\n/g, ' ') 
-                            : '';
-                        
-                        bookSearchLogger.info("Content downloaded for multi-chapter range verification", {
+
+                    bookSearchLogger.info(
+                        "Downloading content to verify multi-chapter range",
+                        {
                             jobId: job.id,
                             bookId: job.book_id,
                             bookName: searchKeyword,
                             url: thread.url,
                             title: thread.title,
                             range: `${start}-${end}`,
-                            contentLength: contentLength,
-                            contentPreview: contentPreview,
-                        });
-                        
+                        }
+                    );
+                    try {
+                        const threadContent =
+                            await cool18Scraper.downloadThread(thread.url);
+
+                        // Log content details
+                        const contentLength = threadContent.content
+                            ? threadContent.content.length
+                            : 0;
+                        const contentPreview = threadContent.content
+                            ? threadContent.content
+                                  .substring(0, 200)
+                                  .replace(/\n/g, " ")
+                            : "";
+
+                        bookSearchLogger.info(
+                            "Content downloaded for multi-chapter range verification",
+                            {
+                                jobId: job.id,
+                                bookId: job.book_id,
+                                bookName: searchKeyword,
+                                url: thread.url,
+                                title: thread.title,
+                                range: `${start}-${end}`,
+                                contentLength: contentLength,
+                                contentPreview: contentPreview,
+                            }
+                        );
+
                         if (contentContainsAuthor(threadContent.content)) {
                             let chaptersAdded = 0;
                             const addedChapterNumbers = [];
@@ -741,29 +867,36 @@ async function processBookSearch(job) {
                             if (chaptersAdded > 0) {
                                 verificationStats.verified += chaptersAdded;
                                 candidateInfo.status = "VALID";
-                                candidateInfo.reason = "Author found in content";
-                                candidateInfo.validChapters = addedChapterNumbers;
-                                bookSearchLogger.info("Multi-chapter range verified - VALID (author found in content)", {
-                                    jobId: job.id,
-                                    bookId: job.book_id,
-                                    bookName: searchKeyword,
-                                    url: thread.url,
-                                    title: thread.title,
-                                    range: `${start}-${end}`,
-                                    chaptersAdded: chaptersAdded,
-                                    chapterNumbers: addedChapterNumbers,
-                                    chapterLink: thread.url,
-                                    authorsSearched: normalizedAuthors,
-                                    validationResult: "VALID",
-                                });
+                                candidateInfo.reason =
+                                    "Author found in content";
+                                candidateInfo.validChapters =
+                                    addedChapterNumbers;
+                                bookSearchLogger.info(
+                                    "Multi-chapter range verified - VALID (author found in content)",
+                                    {
+                                        jobId: job.id,
+                                        bookId: job.book_id,
+                                        bookName: searchKeyword,
+                                        url: thread.url,
+                                        title: thread.title,
+                                        range: `${start}-${end}`,
+                                        chaptersAdded: chaptersAdded,
+                                        chapterNumbers: addedChapterNumbers,
+                                        chapterLink: thread.url,
+                                        authorsSearched: normalizedAuthors,
+                                        validationResult: "VALID",
+                                    }
+                                );
                             } else {
                                 candidateInfo.status = "SKIPPED";
-                                candidateInfo.reason = "All chapters already exist";
+                                candidateInfo.reason =
+                                    "All chapters already exist";
                             }
                         } else {
                             verificationStats.excluded++;
                             candidateInfo.status = "INVALID";
-                            candidateInfo.reason = "Author not found in content";
+                            candidateInfo.reason =
+                                "Author not found in content";
                             bookSearchLogger.info(
                                 "Multi-chapter range excluded - NOT VALID (author not found in content)",
                                 {
@@ -775,7 +908,8 @@ async function processBookSearch(job) {
                                     range: `${start}-${end}`,
                                     chapterLink: thread.url,
                                     authorsSearched: normalizedAuthors,
-                                    validationResult: "INVALID - Author not found",
+                                    validationResult:
+                                        "INVALID - Author not found",
                                 }
                             );
                         }
@@ -824,36 +958,46 @@ async function processBookSearch(job) {
                         date: thread.date,
                     };
                     candidateLinks.push(candidateInfo);
-                    
-                    bookSearchLogger.info("Downloading content to verify multi-chapter list", {
-                        jobId: job.id,
-                        bookId: job.book_id,
-                        bookName: searchKeyword,
-                        url: thread.url,
-                        title: thread.title,
-                        chapters: numbers,
-                    });
-                    try {
-                        const threadContent =
-                            await cool18Scraper.downloadThread(thread.url);
-                        
-                        // Log content details
-                        const contentLength = threadContent.content ? threadContent.content.length : 0;
-                        const contentPreview = threadContent.content 
-                            ? threadContent.content.substring(0, 200).replace(/\n/g, ' ') 
-                            : '';
-                        
-                        bookSearchLogger.info("Content downloaded for multi-chapter list verification", {
+
+                    bookSearchLogger.info(
+                        "Downloading content to verify multi-chapter list",
+                        {
                             jobId: job.id,
                             bookId: job.book_id,
                             bookName: searchKeyword,
                             url: thread.url,
                             title: thread.title,
                             chapters: numbers,
-                            contentLength: contentLength,
-                            contentPreview: contentPreview,
-                        });
-                        
+                        }
+                    );
+                    try {
+                        const threadContent =
+                            await cool18Scraper.downloadThread(thread.url);
+
+                        // Log content details
+                        const contentLength = threadContent.content
+                            ? threadContent.content.length
+                            : 0;
+                        const contentPreview = threadContent.content
+                            ? threadContent.content
+                                  .substring(0, 200)
+                                  .replace(/\n/g, " ")
+                            : "";
+
+                        bookSearchLogger.info(
+                            "Content downloaded for multi-chapter list verification",
+                            {
+                                jobId: job.id,
+                                bookId: job.book_id,
+                                bookName: searchKeyword,
+                                url: thread.url,
+                                title: thread.title,
+                                chapters: numbers,
+                                contentLength: contentLength,
+                                contentPreview: contentPreview,
+                            }
+                        );
+
                         if (contentContainsAuthor(threadContent.content)) {
                             let chaptersAdded = 0;
                             const addedChapterNumbers = [];
@@ -880,29 +1024,36 @@ async function processBookSearch(job) {
                             if (chaptersAdded > 0) {
                                 verificationStats.verified += chaptersAdded;
                                 candidateInfo.status = "VALID";
-                                candidateInfo.reason = "Author found in content";
-                                candidateInfo.validChapters = addedChapterNumbers;
-                                bookSearchLogger.info("Multi-chapter list verified - VALID (author found in content)", {
-                                    jobId: job.id,
-                                    bookId: job.book_id,
-                                    bookName: searchKeyword,
-                                    url: thread.url,
-                                    title: thread.title,
-                                    chapters: numbers,
-                                    chaptersAdded: chaptersAdded,
-                                    chapterNumbers: addedChapterNumbers,
-                                    chapterLink: thread.url,
-                                    authorsSearched: normalizedAuthors,
-                                    validationResult: "VALID",
-                                });
+                                candidateInfo.reason =
+                                    "Author found in content";
+                                candidateInfo.validChapters =
+                                    addedChapterNumbers;
+                                bookSearchLogger.info(
+                                    "Multi-chapter list verified - VALID (author found in content)",
+                                    {
+                                        jobId: job.id,
+                                        bookId: job.book_id,
+                                        bookName: searchKeyword,
+                                        url: thread.url,
+                                        title: thread.title,
+                                        chapters: numbers,
+                                        chaptersAdded: chaptersAdded,
+                                        chapterNumbers: addedChapterNumbers,
+                                        chapterLink: thread.url,
+                                        authorsSearched: normalizedAuthors,
+                                        validationResult: "VALID",
+                                    }
+                                );
                             } else {
                                 candidateInfo.status = "SKIPPED";
-                                candidateInfo.reason = "All chapters already exist";
+                                candidateInfo.reason =
+                                    "All chapters already exist";
                             }
                         } else {
                             verificationStats.excluded++;
                             candidateInfo.status = "INVALID";
-                            candidateInfo.reason = "Author not found in content";
+                            candidateInfo.reason =
+                                "Author not found in content";
                             bookSearchLogger.info(
                                 "Multi-chapter list excluded - NOT VALID (author not found in content)",
                                 {
@@ -914,7 +1065,8 @@ async function processBookSearch(job) {
                                     chapters: numbers,
                                     chapterLink: thread.url,
                                     authorsSearched: normalizedAuthors,
-                                    validationResult: "INVALID - Author not found",
+                                    validationResult:
+                                        "INVALID - Author not found",
                                 }
                             );
                         }
@@ -940,7 +1092,7 @@ async function processBookSearch(job) {
                 }
             }
         }
-        
+
         // Return candidate links for summary logging
         return candidateLinks;
     };
@@ -948,8 +1100,11 @@ async function processBookSearch(job) {
     // Process results from book name search only
     // Author verification is done by checking content, not title
     const verificationStats = { total: 0, verified: 0, excluded: 0, failed: 0 };
-    const candidateLinks = await processSearchResults(searchResults, verificationStats);
-    
+    const candidateLinks = await processSearchResults(
+        searchResults,
+        verificationStats
+    );
+
     // Log summary of chapter verification lookups
     if (verificationStats.total > 0) {
         bookSearchLogger.info("Chapter verification lookup summary", {
@@ -963,61 +1118,82 @@ async function processBookSearch(job) {
             authorsSearched: normalizedAuthors,
         });
     }
-    
+
     // Log all candidate links with their validation status
     if (candidateLinks.length > 0) {
         // Format candidate links with each detail on a new line
-        const formattedCandidates = candidateLinks.map((candidate, index) => {
-            let details = `\n  Candidate #${index + 1}:`;
-            details += `\n    Link: ${candidate.link}`;
-            details += `\n    Title: ${candidate.title}`;
-            details += `\n    Status: ${candidate.status}`;
-            details += `\n    Reason: ${candidate.reason}`;
-            details += `\n    Type: ${candidate.type}`;
-            if (candidate.chapterNumber) {
-                details += `\n    Chapter Number: ${candidate.chapterNumber}`;
-            }
-            if (candidate.chapterNumbers) {
-                details += `\n    Chapter Numbers: ${JSON.stringify(candidate.chapterNumbers)}`;
-            }
-            if (candidate.range) {
-                details += `\n    Range: ${candidate.range}`;
-            }
-            if (candidate.validChapters) {
-                details += `\n    Valid Chapters: ${JSON.stringify(candidate.validChapters)}`;
-            }
-            return details;
-        }).join('\n');
-        
-        bookSearchLogger.info(`=== CANDIDATE LINKS VALIDATION SUMMARY ===\nJob ID: ${job.id}\nBook ID: ${job.book_id}\nBook Name: ${searchKeyword}\nTotal Candidates: ${candidateLinks.length}${formattedCandidates}\n`);
-        
+        const formattedCandidates = candidateLinks
+            .map((candidate, index) => {
+                let details = `\n  Candidate #${index + 1}:`;
+                details += `\n    Link: ${candidate.link}`;
+                details += `\n    Title: ${candidate.title}`;
+                details += `\n    Status: ${candidate.status}`;
+                details += `\n    Reason: ${candidate.reason}`;
+                details += `\n    Type: ${candidate.type}`;
+                if (candidate.chapterNumber) {
+                    details += `\n    Chapter Number: ${candidate.chapterNumber}`;
+                }
+                if (candidate.chapterNumbers) {
+                    details += `\n    Chapter Numbers: ${JSON.stringify(
+                        candidate.chapterNumbers
+                    )}`;
+                }
+                if (candidate.range) {
+                    details += `\n    Range: ${candidate.range}`;
+                }
+                if (candidate.validChapters) {
+                    details += `\n    Valid Chapters: ${JSON.stringify(
+                        candidate.validChapters
+                    )}`;
+                }
+                return details;
+            })
+            .join("\n");
+
+        bookSearchLogger.info(
+            `=== CANDIDATE LINKS VALIDATION SUMMARY ===\nJob ID: ${job.id}\nBook ID: ${job.book_id}\nBook Name: ${searchKeyword}\nTotal Candidates: ${candidateLinks.length}${formattedCandidates}\n`
+        );
+
         // Also log a formatted summary for easy reading
-        const validCandidates = candidateLinks.filter(c => c.status === "VALID");
-        const invalidCandidates = candidateLinks.filter(c => c.status === "INVALID");
-        const failedCandidates = candidateLinks.filter(c => c.status === "FAILED");
-        const skippedCandidates = candidateLinks.filter(c => c.status === "SKIPPED");
-        
+        const validCandidates = candidateLinks.filter(
+            (c) => c.status === "VALID"
+        );
+        const invalidCandidates = candidateLinks.filter(
+            (c) => c.status === "INVALID"
+        );
+        const failedCandidates = candidateLinks.filter(
+            (c) => c.status === "FAILED"
+        );
+        const skippedCandidates = candidateLinks.filter(
+            (c) => c.status === "SKIPPED"
+        );
+
         // Format breakdown with each link on separate lines
         const formatLinks = (links, label) => {
             if (links.length === 0) return `\n  ${label}: None`;
-            return links.map((c, idx) => {
-                let line = `\n  ${label} #${idx + 1}:`;
-                line += `\n    Link: ${c.link}`;
-                line += `\n    Title: ${c.title}`;
-                const chapterInfo = c.chapterNumber || c.validChapters || c.chapterNumbers;
-                if (chapterInfo) {
-                    line += `\n    Chapter(s): ${JSON.stringify(chapterInfo)}`;
-                }
-                if (c.reason) {
-                    line += `\n    Reason: ${c.reason}`;
-                }
-                if (c.error) {
-                    line += `\n    Error: ${c.error}`;
-                }
-                return line;
-            }).join('');
+            return links
+                .map((c, idx) => {
+                    let line = `\n  ${label} #${idx + 1}:`;
+                    line += `\n    Link: ${c.link}`;
+                    line += `\n    Title: ${c.title}`;
+                    const chapterInfo =
+                        c.chapterNumber || c.validChapters || c.chapterNumbers;
+                    if (chapterInfo) {
+                        line += `\n    Chapter(s): ${JSON.stringify(
+                            chapterInfo
+                        )}`;
+                    }
+                    if (c.reason) {
+                        line += `\n    Reason: ${c.reason}`;
+                    }
+                    if (c.error) {
+                        line += `\n    Error: ${c.error}`;
+                    }
+                    return line;
+                })
+                .join("");
         };
-        
+
         const breakdown = `=== CANDIDATE LINKS BREAKDOWN ===
 Job ID: ${job.id}
 Book ID: ${job.book_id}
@@ -1025,31 +1201,44 @@ Book Name: ${searchKeyword}
 Valid: ${validCandidates.length}
 Invalid: ${invalidCandidates.length}
 Failed: ${failedCandidates.length}
-Skipped: ${skippedCandidates.length}${formatLinks(validCandidates.map(c => ({
-            link: c.link,
-            title: c.title,
-            chapterNumber: c.chapterNumber || c.validChapters || c.chapterNumbers,
-        })), 'VALID LINKS')}${formatLinks(invalidCandidates.map(c => ({
-            link: c.link,
-            title: c.title,
-            chapterNumber: c.chapterNumber || c.chapterNumbers,
-            reason: c.reason,
-        })), 'INVALID LINKS')}${formatLinks(failedCandidates.map(c => ({
-            link: c.link,
-            title: c.title,
-            chapterNumber: c.chapterNumber || c.chapterNumbers,
-            error: c.reason,
-        })), 'FAILED LINKS')}${formatLinks(skippedCandidates.map(c => ({
-            link: c.link,
-            title: c.title,
-            chapterNumber: c.chapterNumber || c.chapterNumbers,
-            reason: c.reason,
-        })), 'SKIPPED LINKS')}
+Skipped: ${skippedCandidates.length}${formatLinks(
+            validCandidates.map((c) => ({
+                link: c.link,
+                title: c.title,
+                chapterNumber:
+                    c.chapterNumber || c.validChapters || c.chapterNumbers,
+            })),
+            "VALID LINKS"
+        )}${formatLinks(
+            invalidCandidates.map((c) => ({
+                link: c.link,
+                title: c.title,
+                chapterNumber: c.chapterNumber || c.chapterNumbers,
+                reason: c.reason,
+            })),
+            "INVALID LINKS"
+        )}${formatLinks(
+            failedCandidates.map((c) => ({
+                link: c.link,
+                title: c.title,
+                chapterNumber: c.chapterNumber || c.chapterNumbers,
+                error: c.reason,
+            })),
+            "FAILED LINKS"
+        )}${formatLinks(
+            skippedCandidates.map((c) => ({
+                link: c.link,
+                title: c.title,
+                chapterNumber: c.chapterNumber || c.chapterNumbers,
+                reason: c.reason,
+            })),
+            "SKIPPED LINKS"
+        )}
 `;
-        
+
         bookSearchLogger.info(breakdown);
     }
-    
+
     // Log all found chapters with their numbers and links
     if (foundChapters.length > 0) {
         bookSearchLogger.info("All valid chapters found", {

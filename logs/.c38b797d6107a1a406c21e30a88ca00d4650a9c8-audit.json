@@ -6,39 +6,29 @@
     "auditLog": "/Users/zekta/git/AlexLib/logs/.c38b797d6107a1a406c21e30a88ca00d4650a9c8-audit.json",
     "files": [
         {
-            "date": 1763446786449,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-18.log",
-            "hash": "8c19c35ee96ad9cb7306b2e737f890fddfeb3a8c84d770bfdf55de86f1a2b0b2"
+            "date": 1764240088609,
+            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-27.log",
+            "hash": "5c8b03b65d844d7af40f7450f332ad4d72b1d0d68c06bebe103d6eb5c9f3870d"
         },
         {
-            "date": 1763481601644,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-19.log",
-            "hash": "e878e8c6276f50a6d38de8ba2420729f77594dde33eb5681ddc22afd9eb348d1"
+            "date": 1764504139717,
+            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-30.log",
+            "hash": "406236ff88ab0164ab1461bd70ad4211baf0d771094b176c6dea04a4e5a2463f"
         },
         {
-            "date": 1763646959868,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-20.log",
-            "hash": "b7a6ffdc9fa22285f6ee6fd87800f1265613acd6f23318a6305489a1b0cd331d"
+            "date": 1764558724467,
+            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-12-01.log",
+            "hash": "9185b045fdc5c5be978fb494b8506494b2516cde5878f9945ca1b2d7da51b867"
         },
         {
-            "date": 1763650827442,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-21.log",
-            "hash": "6c6512711c76774abef7484220d879071466116131f826272a417f1bed686f92"
+            "date": 1765123410430,
+            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-12-08.log",
+            "hash": "00d69613a6746ea1d859f8ec37c66507fc272235cd9458a3bd9f573b3bd2e401"
         },
         {
-            "date": 1763817856302,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-22.log",
-            "hash": "c5086ad532269a9fd459ce23864f044528b8394dbe7b3cdfef6262aced9a2290"
-        },
-        {
-            "date": 1763824207704,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-23.log",
-            "hash": "f506159af0cb12cd1535b35975d399edee3830b743dd0c536c1c84e8dee29218"
-        },
-        {
-            "date": 1763914809808,
-            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-11-24.log",
-            "hash": "11d43a5d6740ff67e414807c785d81cb96396d3ab00540e6f2bd74d8426893ad"
+            "date": 1765276875503,
+            "name": "/Users/zekta/git/AlexLib/logs/booksearch-2025-12-09.log",
+            "hash": "adf7879c89289ffe96bd25f093cab31a1eaf4b733d4f4d482580733cc4fa5d0d"
         }
     ],
     "hashType": "sha256"

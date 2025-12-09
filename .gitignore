@@ -7,3 +7,5 @@ source/
 
 logs/
 format_output/
+logs/
+source_backup/

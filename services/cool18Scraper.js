@@ -545,6 +545,9 @@ async function downloadThread(url) {
             title = $("h1, h2, .title, .thread-title").first().text().trim();
         }
 
+        const mainTitle =
+            $(".main-title").first().text().trim() || null;
+
         // Extract content - common selectors for forum posts
         let content = "";
         const contentSelectors = [
@@ -580,13 +583,16 @@ async function downloadThread(url) {
             url,
             threadId,
             title,
+            mainTitle,
             contentLength: content.length,
         };
 
         return {
             title,
+            mainTitle,
             content,
             metadata,
+            html: htmlString,
         };
     } catch (error) {
         logger.error("Error downloading thread", { url, error });
