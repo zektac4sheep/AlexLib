@@ -749,9 +749,22 @@ function isChapterHeader(line) {
     if (trimmed.startsWith("#")) {
         return true;
     }
-    // Check for chapter patterns like "## （N）" or "## 第N章"
-    const chapterPattern = /^##\s*[（(]?\d+[）)]?/;
-    return chapterPattern.test(trimmed);
+
+    // Define digit pattern to support Chinese numbers
+    const FULL_WIDTH_DIGITS = "０１２３４５６７８９";
+    const DIGIT_PATTERN = `[零一二三四五六七八九十百千万两0-9${FULL_WIDTH_DIGITS}]`;
+
+    // Check for chapter patterns:
+    // - "## （N）" or "## （一）" - markdown with parentheses
+    // - "## 第N章" or "## 第一章" - markdown with 第X章 format
+    // - "第N章" or "第一章" - plain text format
+    const chapterPatterns = [
+        new RegExp(`^##\\s*[（(]?${DIGIT_PATTERN}+[）)]?`, "u"),
+        new RegExp(`^##\\s*第${DIGIT_PATTERN}+(?:章|回|集|話|篇|部|卷)`, "u"),
+        new RegExp(`^第${DIGIT_PATTERN}+(?:章|回|集|話|篇|部|卷)`, "u"),
+    ];
+
+    return chapterPatterns.some((pattern) => pattern.test(trimmed));
 }
 
 /**

@@ -234,8 +234,12 @@ function detectChapters(content, options = {}) {
 
     // Simple pattern: （1） （2） etc. - used for chapter detection
     // Also matches patterns like "（黑暗 4）" where there's text before the number
+    // Also matches Chinese numbers like "（一）" or "（二）"
     // Allow matching anywhere in the line, not just at start
-    const simplePattern = /[（(][^）)]*?(\d+)[）)]/;
+    const simplePattern = new RegExp(
+        `[（(][^）)]*?(${DIGIT_PATTERN}+)[）)]`,
+        "u"
+    );
 
     // Patterns for extracting bookname and chapter info (old pattern)
     // Pattern 1: bookname (chapterNo.) [chapterName] - e.g., "我們的風箏線（3）騙子" or "妻的風箏線（２）" or "妻的風箏線（終）宴"
@@ -265,27 +269,29 @@ function detectChapters(content, options = {}) {
         const simpleMatch = line.match(simplePattern);
         const chapterMarkerMatch = line.match(chapterMarkerPattern);
         if (simpleMatch || chapterMarkerMatch) {
+            // Try to extract numeric value (works for Arabic digits)
             let chapterNum = 0;
             if (simpleMatch) {
                 chapterNum = parseInt(simpleMatch[1], 10);
             } else if (chapterMarkerMatch) {
                 chapterNum = parseInt(chapterMarkerMatch[1], 10);
             }
+
+            // If we matched a pattern, it's a chapter header (even if parseInt failed for Chinese numbers)
+            // extractChapterNumber will handle Chinese number conversion later
             if (!isNaN(chapterNum) && chapterNum > 0) {
                 detectedChapterNum = chapterNum;
-                isChapterHeader = true;
-
-                // Debug: log when we detect a potential chapter header
-                logger.info("Simple pattern detected chapter header", {
-                    line: trimmedLine.substring(0, 100),
-                    lineNumber: lineNumber + 1,
-                    detectedChapterNum,
-                    Matched: simpleMatch
-                        ? simpleMatch[0]
-                        : chapterMarkerMatch[0],
-                    fullLine: line,
-                });
             }
+            isChapterHeader = true;
+
+            // Debug: log when we detect a potential chapter header
+            logger.info("Simple pattern detected chapter header", {
+                line: trimmedLine.substring(0, 100),
+                lineNumber: lineNumber + 1,
+                detectedChapterNum,
+                Matched: simpleMatch ? simpleMatch[0] : chapterMarkerMatch[0],
+                fullLine: line,
+            });
         } else if (trimmedLine.includes("（") && trimmedLine.includes("）")) {
             // Log lines with parentheses that didn't match simple pattern
             logger.info("Line with parentheses but no simple pattern match", {
