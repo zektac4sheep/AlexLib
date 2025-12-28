@@ -196,7 +196,7 @@ class Book {
         const db = getDatabase();
         return new Promise((resolve, reject) => {
             db.all(
-                "SELECT * FROM books ORDER BY last_updated DESC",
+                "SELECT * FROM books ORDER BY COALESCE(rating, 0) DESC, last_updated DESC",
                 [],
                 (err, rows) => {
                     if (err) {
